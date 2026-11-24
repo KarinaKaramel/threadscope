@@ -305,6 +305,7 @@ async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) 
   for (const [m, input] of models) {
     try { const t = aiText(await env.AI.run(m, input)); if (t && t.trim()) return { text: t, model: m }; lastErr = new Error('Пустой ответ модели'); } catch (e) { lastErr = e; }
   }
+  if (/4006|daily free allocation/.test(lastErr?.message || '')) throw new ApiError('Бесплатный лимит ИИ на сегодня закончился (обновится в 02:00 по Киеву). Подключи Claude или ChatGPT по API-ключу, чтобы не зависеть от лимита', 429);
   throw lastErr || new Error('ИИ недоступен');
 }
 async function aiJson(env, system, user, opts) {

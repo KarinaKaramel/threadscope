@@ -742,7 +742,8 @@ function worldFiltered() {
 
 async function translateVisible() {
   const pot = i => (i.replies * 3 + i.likes) / (i.followers + 100);
-  const need = baseFiltered().filter(i => S.tr[i.id]?.mech == null).sort((a, b) => pot(b) - pot(a)).slice(0, 40);
+  const free = (S.me?.ai?.provider || 'workers-ai') === 'workers-ai';
+  const need = baseFiltered().filter(i => S.tr[i.id]?.mech == null).sort((a, b) => pot(b) - pot(a)).slice(0, free ? 10 : 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
   const per = S.me?.ai?.provider === 'claude' ? 5 : 2;
   const chunks = []; for (let k = 0; k < need.length; k += per) chunks.push(need.slice(k, k + per));
@@ -757,11 +758,12 @@ async function translateVisible() {
       const r = await res.json(); if (r.error) throw new Error(r.error);
       for (const t of r) S.tr[t.id] = t;
       LS.set('tr', S.tr);
-    } catch { failed++; }
+    } catch (e) { failed++; if (/лимит/i.test(e.message || '')) S.aiLimit = e.message; }
     done += ch.length; st(); renderWorld();
   };
   let next = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (next < chunks.length) await run(chunks[next++]); }));
-  if ($('#wstat')) $('#wstat').textContent = failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
+  if ($('#wstat')) $('#wstat').textContent = S.aiLimit ? 'бесплатный лимит ИИ на сегодня исчерпан' : failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
+  if (S.aiLimit) toast(S.aiLimit, 8000);
 }
 function renderWorld() {
   const box = $('#wres'); if (!box) return;

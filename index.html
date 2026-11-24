@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="style.css?v=1">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 <header class="top">
@@ -22,6 +22,7 @@
 <nav class="tabs" id="tabs">
   <a href="#overview" data-tab="overview">Обзор</a>
   <a href="#posts" data-tab="posts">Публикации</a>
+  <a href="#replies" data-tab="replies">Ответы <span id="rbadge" class="badge" hidden></span></a>
   <a href="#studio" data-tab="studio">Студия</a>
   <a href="#trends" data-tab="trends">Тренды</a>
   <a href="#connect" data-tab="connect">Подключение</a>
@@ -29,11 +30,12 @@
 <main>
   <section id="overview" class="view"></section>
   <section id="posts" class="view"></section>
+  <section id="replies" class="view"></section>
   <section id="studio" class="view"></section>
   <section id="trends" class="view"></section>
   <section id="connect" class="view"></section>
 </main>
 <div id="toast" class="toast" hidden></div>
-<script src="app.js?v=1"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

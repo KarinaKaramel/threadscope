@@ -79,3 +79,14 @@ code{background:var(--soft);padding:1px 6px;border-radius:6px;font-size:13px}
 .heat{display:grid;grid-template-columns:28px repeat(24,1fr);gap:2px;font-size:10px;color:var(--mut)}
 .heat div{height:16px;border-radius:3px}
 .loading{opacity:.6;pointer-events:none}
+
+.badge{display:inline-block;min-width:18px;padding:0 6px;border-radius:9px;background:var(--acc2);color:#fff;font-size:11px;line-height:18px;text-align:center;margin-left:2px}
+.tabs a.on .badge{background:var(--acc2)}
+.cm{padding:14px 0;border-bottom:1px solid var(--line)}.cm:last-child{border:0}
+.cm .who{font-weight:600}
+.cm .chain{border-left:2px solid var(--line);padding-left:10px;margin:6px 0;font-size:13px;color:var(--mut)}
+.variants{display:grid;gap:8px;margin-top:10px}
+.variant{display:flex;gap:8px;align-items:flex-start}
+.variant textarea{min-height:64px;font-size:14px}
+.variant .acts{display:flex;flex-direction:column;gap:6px}
+.postHead{font-size:14px;white-space:pre-wrap;padding:10px 12px;background:var(--soft);border-radius:12px}

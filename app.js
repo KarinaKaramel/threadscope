@@ -399,8 +399,17 @@ const TREND_PRESETS = {
   'Threads': ['укртредс', 'тредс', 'підписники'],
 };
 function renderTrends() {
+  const W = LS.get('worldCfg', { minEng: 200, maxF: 3000, clean: true });
   $('#trends').innerHTML = `
-    <h2>Тренды</h2>
+    <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button></div>
+    <p class="mut small" style="margin-top:-6px">Посты обычных людей (не медиа и не звёзд) из Bluesky и Mastodon за последние 3 дня, которые собрали много реакций. Переведены на украинский, отсортированы по тому, насколько механика подходит твоему аккаунту. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях — там те же сюжеты, но до укр. Threads они ещё не дошли.</p>
+    <div class="card"><div class="row small">
+      <span class="mut">реакций от</span><select id="wmin" style="width:auto">${[50, 100, 200, 500, 1000].map(v => `<option ${v == W.minEng ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <span class="mut">подписчиков у автора до</span><select id="wmax" style="width:auto">${[500, 1000, 3000, 10000, 50000].map(v => `<option ${v == W.maxF ? 'selected' : ''}>${v}</option>`).join('')}</select>
+      <label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--ink)"><input type="checkbox" id="wclean" ${W.clean ? 'checked' : ''} style="width:auto"> без политики и новостей</label>
+      <span class="sp"></span><span id="wstat" class="mut"></span></div></div>
+    <div id="wres" style="margin-top:12px"></div>
+    <h2 style="margin-top:28px">Поиск в Threads</h2>
     <div class="card">
       <div class="row"><input id="tq" placeholder="слово или фраза, напр. мітинг" style="flex:2;min-width:200px">
         <select id="ttype" style="width:auto"><option value="TOP">Популярные</option><option value="RECENT">Свежие</option></select>
@@ -414,6 +423,119 @@ function renderTrends() {
     <div class="card" id="tres" style="margin-top:12px"><div class="empty">Выбери тему или введи слово</div></div>`;
   $('#trends').querySelectorAll('[data-q]').forEach(c => c.onclick = () => { $('#tq').value = c.dataset.q; search(); });
   $('#tgo').onclick = search; $('#tq').onkeydown = e => e.key === 'Enter' && search();
+  const saveW = () => { LS.set('worldCfg', { minEng: +$('#wmin').value, maxF: +$('#wmax').value, clean: $('#wclean').checked }); renderWorld(); };
+  $('#wmin').onchange = $('#wmax').onchange = $('#wclean').onchange = saveW;
+  $('#wgo').onclick = () => loadWorld(true);
+  renderWorld();
+  if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld();
+}
+
+// ---------- мировые тренды ----------
+S.world = LS.get('world', null);
+S.tr = LS.get('tr', {});
+const POLITICS = /\b(trump|biden|harris|musk|putin|zelensk|election|congress|senate|gop|maga|democrat|republican|ukraine|russia|israel|gaza|palestin|netanyahu|nato|war|tariff|ice\b|elecci|gobierno|pp\b|psoe|vox\b|macron|merz|afd|bundestag|wahl|krieg|政府|選挙|首相|大統領|戦争|путин|выбор|война|депутат)/i;
+const stripHtml = h => { const d = new DOMParser().parseFromString(String(h || '').replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n\n'), 'text/html'); return (d.body.textContent || '').trim(); };
+async function loadWorld(force) {
+  const st = $('#wstat'), btn = $('#wgo');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
+  const setS = t => { if ($('#wstat')) $('#wstat').textContent = t; };
+  try {
+    const now = Date.now(), maxAge = 72 * 3600e3;
+    const items = [];
+    setS('Bluesky…');
+    let cursor;
+    for (let i = 0; i < 4; i++) {
+      const u = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot&limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      const r = await fetch(u).then(r => r.json()).catch(() => null);
+      if (!r?.feed) break;
+      for (const { post: p } of r.feed) {
+        const text = p.record?.text || '';
+        items.push({ id: 'bs:' + p.uri, src: 'Bluesky', text, lang: (p.record?.langs || [])[0] || '', likes: p.likeCount || 0, replies: p.replyCount || 0, reposts: (p.repostCount || 0) + (p.quoteCount || 0), author: p.author.handle, name: p.author.displayName || '', did: p.author.did, followers: null, url: `https://bsky.app/profile/${p.author.handle}/post/${p.uri.split('/').pop()}`, at: p.record?.createdAt || p.indexedAt, media: !!p.embed });
+      }
+      cursor = r.cursor; if (!cursor) break;
+    }
+    setS('Mastodon…');
+    for (const inst of ['mastodon.social', 'mastodon.online']) {
+      for (const off of [0, 40, 80]) {
+        const r = await fetch(`https://${inst}/api/v1/trends/statuses?limit=40&offset=${off}`).then(r => r.json()).catch(() => null);
+        if (!Array.isArray(r) || !r.length) break;
+        for (const s of r) items.push({ id: 'ms:' + s.uri, src: 'Mastodon', text: stripHtml(s.content), lang: s.language || '', likes: s.favourites_count || 0, replies: s.replies_count || 0, reposts: s.reblogs_count || 0, author: s.account.acct.includes('@') ? s.account.acct : s.account.acct + '@' + inst, name: s.account.display_name || '', followers: s.account.followers_count, url: s.url, at: s.created_at, media: !!s.media_attachments?.length });
+      }
+    }
+    const seen = new Set();
+    let pool = items.filter(i => !seen.has(i.id) && seen.add(i.id) && now - new Date(i.at) < maxAge && i.text.length >= 25 && i.likes + i.replies + i.reposts >= 50);
+    // подписчики авторов Bluesky
+    setS('Проверяю авторов…');
+    const dids = [...new Set(pool.filter(i => i.did).map(i => i.did))];
+    const fol = {};
+    for (let k = 0; k < dids.length; k += 25) {
+      const r = await fetch('https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?' + dids.slice(k, k + 25).map(d => 'actors=' + encodeURIComponent(d)).join('&')).then(r => r.json()).catch(() => null);
+      for (const p of r?.profiles || []) fol[p.did] = p.followersCount;
+    }
+    for (const i of pool) if (i.did) i.followers = fol[i.did] ?? null;
+    pool = pool.filter(i => i.followers != null && i.followers <= 50000);
+    S.world = pool; LS.set('world', pool); LS.set('worldAt', Date.now());
+    renderWorld();
+    await translateVisible();
+  } catch (e) { toast('Тренды: ' + e.message, 5000); }
+  finally { if ($('#wgo')) { $('#wgo').disabled = false; $('#wgo').textContent = '↻ Найти свежее'; } }
+}
+function worldFiltered() {
+  const W = LS.get('worldCfg', { minEng: 200, maxF: 3000, clean: true });
+  return (S.world || []).filter(i => {
+    const eng = i.likes + i.replies + i.reposts;
+    if (eng < W.minEng || i.followers > W.maxF) return false;
+    if (i.lang && /^uk/.test(i.lang)) return false;
+    if (W.clean) { if (POLITICS.test(i.text)) return false; const t = S.tr[i.id]; if (t && (['політика', 'новини'].includes(t.topic) || t.fit < 3)) return false; }
+    return true;
+  }).sort((a, b) => {
+    const fa = S.tr[a.id]?.fit ?? 5, fb = S.tr[b.id]?.fit ?? 5;
+    if (fb !== fa) return fb - fa;
+    return (b.likes + b.replies * 3) / (b.followers + 50) - (a.likes + a.replies * 3) / (a.followers + 50);
+  }).slice(0, 40);
+}
+async function translateVisible() {
+  const need = worldFiltered().filter(i => !S.tr[i.id]).slice(0, 45);
+  for (let k = 0; k < need.length; k += 15) {
+    if ($('#wstat')) $('#wstat').textContent = `Перевожу ${k + 1}-${Math.min(k + 15, need.length)} из ${need.length}…`;
+    try {
+      const r = await api('/translate', { method: 'POST', body: { items: need.slice(k, k + 15).map(i => ({ id: i.id, text: i.text })) } });
+      for (const t of r) S.tr[t.id] = t;
+      LS.set('tr', S.tr); renderWorld();
+    } catch (e) { if ($('#wstat')) $('#wstat').textContent = 'Перевод: ' + e.message; return; }
+  }
+  if ($('#wstat')) $('#wstat').textContent = '';
+}
+const LANGS = { en: 'англ', es: 'исп', de: 'нем', ja: 'яп', fr: 'фр', pt: 'порт', it: 'ит', nl: 'нид', pl: 'пол', ru: 'рус', ko: 'кор', zh: 'кит', tr: 'тур', sv: 'швед', fi: 'фин', cs: 'чеш' };
+function renderWorld() {
+  const box = $('#wres'); if (!box) return;
+  if (!S.world) { box.innerHTML = '<div class="card empty">Ищу залетевшие посты…</div>'; return; }
+  const list = worldFiltered();
+  if ($('#wstat') && !$('#wstat').textContent.startsWith('Перевожу')) $('#wstat').textContent = `найдено ${list.length}`;
+  box.innerHTML = list.length ? `<div class="card">${list.map(i => { const t = S.tr[i.id]; return `
+    <div class="result" id="w-${btoa(unescape(encodeURIComponent(i.id))).replace(/[^a-z0-9]/gi, '').slice(-16)}">
+      <div class="meta">${i.src} · <b>${esc(i.name || i.author)}</b> @${esc(i.author)} · ${fmt(i.followers)} подп. · ${LANGS[(i.lang || '').slice(0, 2)] || i.lang || '?'} · ${kyiv(i.at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        ${t ? `<span class="pill">${esc(t.topic)}</span> <span class="pill ${t.fit >= 7 ? 'ok' : t.fit >= 4 ? '' : 'warn'}">подходит ${t.fit}/10</span>` : ''}</div>
+      <div class="t">${t ? esc(t.uk) : `<span class="mut">${esc(i.text)}</span>`}</div>
+      ${t ? `<details class="small" style="margin-top:4px"><summary>оригинал</summary><div class="mut" style="white-space:pre-wrap">${esc(i.text)}</div></details>` : ''}
+      <div class="row small" style="margin-top:6px"><span>❤ ${fmt(i.likes)}</span><span>💬 ${fmt(i.replies)}</span><span>🔁 ${fmt(i.reposts)}</span>${i.media ? '<span class="pill">с медиа</span>' : ''}
+        <a href="${esc(i.url)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span>
+        <button class="acc sm" data-adapt="${esc(i.id)}">✨ Идеи для меня</button><button class="ghost sm" data-wclaude="${esc(i.id)}">в Claude</button></div>
+      <div class="variants" data-out="${esc(i.id)}"></div>
+    </div>`; }).join('')}</div>` : '<div class="card empty">Под эти фильтры ничего нет — снизь порог реакций или подними лимит подписчиков</div>';
+  box.querySelectorAll('[data-adapt]').forEach(b => b.onclick = () => adaptIdea(b.dataset.adapt, b));
+  box.querySelectorAll('[data-wclaude]').forEach(b => b.onclick = () => { const i = S.world.find(x => x.id === b.dataset.wclaude); copy(`Этот пост залетел в ${i.src} (${fmt(i.likes)} лайков, ${fmt(i.replies)} ответов, у автора ${fmt(i.followers)} подписчиков):\n"${i.text}"\n${i.url}\n\nНе копируй — возьми механику и придумай 5 оригинальных постов для моего украинского Threads (скилл threads-posts).`, 'Скопировано — вставь в чат с Claude'); });
+}
+async function adaptIdea(id, btn) {
+  const i = S.world.find(x => x.id === id); const out = document.querySelector(`[data-out="${CSS.escape(id)}"]`);
+  btn.disabled = true; btn.textContent = 'Думаю…';
+  try {
+    const r = await api('/adapt', { method: 'POST', body: { text: (S.tr[id]?.uk ? S.tr[id].uk + '\n(оригінал: ' + i.text + ')' : i.text) } });
+    out.innerHTML = r.variants.map((v, k) => `<div class="variant"><textarea>${esc(v)}</textarea><div class="acts"><button class="sm" data-draft="${k}">В черновики</button><button class="ghost sm" data-cpv="${k}">Копия</button></div></div>`).join('');
+    out.querySelectorAll('[data-draft]').forEach(b => b.onclick = () => { const v = b.closest('.variant').querySelector('textarea').value.trim(); S.drafts.unshift({ id: Date.now(), text: v, topic_tag: '' }); LS.set('drafts', S.drafts); toast('В черновиках Студии ✓'); });
+    out.querySelectorAll('[data-cpv]').forEach(b => b.onclick = () => copy(b.closest('.variant').querySelector('textarea').value));
+  } catch (e) { out.innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
+  finally { btn.disabled = false; btn.textContent = '✨ Ещё идеи'; }
 }
 async function search() {
   const q = $('#tq').value.trim(); if (!q) return;
@@ -429,6 +551,90 @@ async function search() {
       <div class="t">${esc(p.text || '')}</div><div class="row small" style="margin-top:6px"><a href="${esc(p.permalink)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span><a href="#" data-idea="${p.id}">идея ответа → Claude</a></div></div>`).join('') : '<div class="empty">Ничего не нашлось</div>';
     box.querySelectorAll('[data-idea]').forEach(a => a.onclick = e => { e.preventDefault(); const p = list.find(x => x.id === a.dataset.idea); copy(`Придумай 3 варианта моего ответа на этот пост в Threads (мой стиль: украинский, разговорный, со строчной, самоирония, точное наблюдение, без морализаторства). Ответ должен добавлять свой поворот, чтобы люди переходили в мой профиль.\n\n@${p.username}: "${p.text}"\n${p.permalink}`, 'Скопировано — вставь в чат с Claude'); });
   } catch (e) { box.innerHTML = `<div class="empty">Ошибка: ${esc(e.message)}</div>`; }
+}
+
+
+// ---------- Ответы на комментарии ----------
+S.inbox = LS.get('inbox', null);
+S.done = LS.get('doneReplies', {});
+async function loadInbox(force) {
+  const days = LS.get('inboxDays', 14), all = LS.get('inboxAll', false);
+  S.inbox = await api(`/inbox?days=${days}${all ? '&all=1' : ''}`);
+  LS.set('inbox', S.inbox); LS.set('inboxAt', Date.now());
+  updateBadge();
+}
+function pendingCount() { return (S.inbox || []).reduce((a, g) => a + g.comments.filter(c => !c.answered && !S.done[c.id]).length, 0); }
+function updateBadge() { const b = $('#rbadge'); if (!b) return; const n = pendingCount(); b.hidden = !n; b.textContent = n; }
+function renderReplies() {
+  const days = LS.get('inboxDays', 14), all = LS.get('inboxAll', false);
+  const groups = S.inbox || [];
+  $('#replies').innerHTML = `
+    <div class="row"><h2>Ответы на комментарии</h2><span class="sp"></span>
+      <select id="rdays" style="width:auto">${[3, 7, 14, 30].map(d => `<option value="${d}" ${d == days ? 'selected' : ''}>посты за ${d} дн.</option>`).join('')}</select>
+      <label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--ink)" class="small"><input type="checkbox" id="rall" ${all ? 'checked' : ''} style="width:auto"> показывать отвеченные</label>
+      <button class="ghost sm" id="rload">↻ Собрать комментарии</button></div>
+    <p class="mut small" style="margin-top:-6px">Ответ в первый час после комментария продлевает жизнь поста в рекомендациях. Ничего не уходит без кнопки «Ответить».</p>
+    <div id="rlist">${!S.inbox ? '<div class="card empty">Нажми «Собрать комментарии»</div>' : groups.length ? groups.map(g => `
+      <div class="card" style="margin-bottom:12px">
+        <div class="row small mut" style="margin-bottom:6px"><span>${kyiv(g.post.timestamp, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span><span class="sp"></span><a href="${esc(g.post.permalink)}" target="_blank" rel="noopener">пост ↗</a></div>
+        <div class="postHead">${esc(g.post.text || '')}</div>
+        ${g.error ? `<p style="color:var(--bad)" class="small">${esc(g.error)}</p>` : ''}
+        ${g.comments.map(c => commentHtml(g, c)).join('')}
+      </div>`).join('') : '<div class="card empty">Все комментарии отвечены 🎉</div>'}</div>`;
+  $('#rdays').onchange = e => { LS.set('inboxDays', +e.target.value); refreshInbox(); };
+  $('#rall').onchange = e => { LS.set('inboxAll', e.target.checked); refreshInbox(); };
+  $('#rload').onclick = refreshInbox;
+  $('#rlist').querySelectorAll('[data-gen]').forEach(b => b.onclick = () => generate(b.dataset.gen));
+  $('#rlist').querySelectorAll('[data-claude]').forEach(b => b.onclick = () => { const { g, c } = findC(b.dataset.claude); copy(`Придумай 3 варианта моего ответа на комментарий под моим постом в Threads (используй скилл threads-posts).\n\nМой пост: "${g.post.text}"\n${c.chain.map(x => (x.mine ? 'я' : '@' + x.username) + ': "' + x.text + '"').join('\n')}\n@${c.username}: "${c.text}"`, 'Скопировано — вставь в чат с Claude'); });
+  $('#rlist').querySelectorAll('[data-skip]').forEach(b => b.onclick = () => { S.done[b.dataset.skip] = 'skip'; LS.set('doneReplies', S.done); updateBadge(); b.closest('.cm').style.opacity = .4; });
+  updateBadge();
+}
+function findC(id) { for (const g of S.inbox || []) for (const c of g.comments) if (c.id === id) return { g, c }; return {}; }
+function commentHtml(g, c) {
+  const done = c.answered || S.done[c.id];
+  return `<div class="cm" id="cm-${c.id}" style="${done ? 'opacity:.5' : ''}">
+    ${c.chain.length ? `<div class="chain">${c.chain.map(x => `<div><b>${x.mine ? 'ты' : '@' + esc(x.username)}</b>: ${esc(x.text)}</div>`).join('')}</div>` : ''}
+    <div><span class="who">@${esc(c.username)}</span> <span class="mut small">· ${kyiv(c.timestamp, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${c.answered ? ' · ты уже ответила' : S.done[c.id] === 'sent' ? ' · отправлено' : ''}</span></div>
+    <div style="white-space:pre-wrap;margin-top:2px">${esc(c.text)}</div>
+    <div class="row" style="margin-top:8px">
+      <button class="acc sm" data-gen="${c.id}">✨ Варианты ответа</button>
+      <button class="ghost sm" data-claude="${c.id}">в Claude</button>
+      ${c.permalink ? `<a class="small" href="${esc(c.permalink)}" target="_blank" rel="noopener">открыть ↗</a>` : ''}
+      <span class="sp"></span>${done ? '' : `<button class="ghost sm" data-skip="${c.id}">не отвечать</button>`}
+    </div>
+    <input class="small" id="hint-${c.id}" placeholder="пожелание к ответу (необязательно): например «короче», «с подколом», «поддержать»" style="margin-top:8px;font-size:13px;padding:8px 10px">
+    <div class="variants" id="var-${c.id}"></div>
+  </div>`;
+}
+async function generate(id) {
+  const { g, c } = findC(id); if (!c) return;
+  const box = $('#var-' + id), btn = $(`[data-gen="${id}"]`);
+  btn.disabled = true; btn.textContent = 'Думаю…'; box.innerHTML = '';
+  try {
+    const r = await api('/suggest', { method: 'POST', body: { post: g.post.text || '', comment: c.text, chain: c.chain, hint: $('#hint-' + id).value.trim() } });
+    box.innerHTML = r.variants.map((v, i) => `<div class="variant"><textarea id="v-${id}-${i}">${esc(v)}</textarea><div class="acts"><button class="sm" data-send="${id}" data-i="${i}">Ответить</button><button class="ghost sm" data-cp="${id}" data-i="${i}">Копия</button></div></div>`).join('');
+    box.querySelectorAll('[data-cp]').forEach(b => b.onclick = () => copy($(`#v-${id}-${b.dataset.i}`).value));
+    box.querySelectorAll('[data-send]').forEach(b => b.onclick = () => sendReply(id, $(`#v-${id}-${b.dataset.i}`).value, b));
+  } catch (e) { box.innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
+  finally { btn.disabled = false; btn.textContent = '✨ Ещё варианты'; }
+}
+async function sendReply(id, text, btn) {
+  const { c } = findC(id); text = text.trim();
+  if (!text) return toast('Пустой ответ');
+  if ([...text].length > 500) return toast('Больше 500 символов');
+  if (!confirm(`Ответить @${c.username} в Threads?\n\n${text}`)) return;
+  btn.disabled = true; btn.textContent = 'Отправляю…';
+  try {
+    await api('/reply', { method: 'POST', body: { reply_to_id: id, text } });
+    S.done[id] = 'sent'; LS.set('doneReplies', S.done); updateBadge();
+    const el = $('#cm-' + id); el.style.opacity = .5; $('#var-' + id).innerHTML = `<p class="small up">Отправлено ✓ «${esc(text)}»</p>`;
+    toast('Ответ отправлен ✓');
+  } catch (e) { toast('Ошибка: ' + e.message + ' — проверь в Threads, прежде чем жать снова', 7000); btn.disabled = false; btn.textContent = 'Ответить'; }
+}
+async function refreshInbox() {
+  const b = $('#rload'); if (b) { b.disabled = true; b.textContent = 'Собираю…'; }
+  try { await loadInbox(); } catch (e) { toast(e.message, 5000); }
+  if ((location.hash || '').slice(1) === 'replies') renderReplies();
 }
 
 // ---------- Подключение ----------
@@ -483,6 +689,7 @@ async function syncAll() {
     try { S.insights = await api(`/insights?since=${since}&until=${until}`); LS.set('insights', S.insights); } catch (e) { console.warn(e); }
     try { S.history = await api('/history'); LS.set('history', S.history); } catch {}
     try { S.queue = await api('/queue'); } catch {}
+    try { await loadInbox(); } catch {}
     LS.set('syncedAt', Date.now());
   } finally { btn.disabled = false; btn.textContent = '↻ Обновить'; renderAll(); }
 }
@@ -491,11 +698,12 @@ function renderAll() {
   const tab = (location.hash || '#overview').slice(1);
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === tab));
   document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
-  ({ overview: renderOverview, posts: renderPosts, studio: renderStudio, trends: renderTrends, connect: renderConnect }[tab] || renderOverview)();
+  updateBadge();
+  ({ overview: renderOverview, posts: renderPosts, replies: renderReplies, studio: renderStudio, trends: renderTrends, connect: renderConnect }[tab] || renderOverview)();
 }
 window.addEventListener('hashchange', renderAll);
 $('#refreshBtn').onclick = () => syncAll().then(() => toast('Обновлено')).catch(e => toast(e.message, 5000));
-if (!['#overview', '#posts', '#studio', '#trends', '#connect'].includes(location.hash)) location.hash = S.key ? '#overview' : '#connect';
+if (!['#overview', '#posts', '#replies', '#studio', '#trends', '#connect'].includes(location.hash)) location.hash = S.key ? '#overview' : '#connect';
 renderAll();
 if (S.key && Date.now() - LS.get('syncedAt', 0) > 10 * 60e3) syncAll().catch(e => toast(e.message, 5000));
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

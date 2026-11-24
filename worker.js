@@ -263,7 +263,7 @@ async function suggest(env, { post, comment, chain = [], hint = '' }) {
       const r = await env.AI.run(m, input);
       const arr = extractJson(aiText(r));
       if (Array.isArray(arr) && arr.length) {
-        const clean = arr.map(x => String(typeof x === 'object' ? (x.text || x.reply || Object.values(x)[0]) : x).replace(/[—–]/g, '-').replace(/[«»“”„]/g, '"').trim()).filter(Boolean).slice(0, 3);
+        const clean = arr.map(x => String(typeof x === 'object' ? (x.text || x.reply || Object.values(x)[0]) : x).replace(/[\u2010-\u2015\u2212]/g, '-').replace(/[«»“”„]/g, '"').trim()).filter(Boolean).slice(0, 3);
         if (clean.length) return { model: m, variants: clean };
       }
       lastErr = new Error('Модель вернула пустой ответ');
@@ -286,10 +286,10 @@ async function aiJson(env, system, user, maxTokens = 3000) {
   }
   throw lastErr;
 }
-const fixTypo = t => String(t || '').replace(/[—–]/g, '-').replace(/[«»“”„]/g, '"').trim();
+const fixTypo = t => String(t || '').replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\u00a0/g, ' ').replace(/[«»“”„]/g, '"').trim();
 
 async function translate(env, items) {
-  const list = items.slice(0, 15).map(i => ({ id: i.id, text: String(i.text || '').slice(0, 700) }));
+  const list = items.slice(0, 8).map(i => ({ id: i.id, text: String(i.text || '').slice(0, 700) }));
   const sys = 'Ти перекладач і редактор соцмереж. Перекладаєш пости з будь-яких мов на живу розмовну українську, зберігаючи жарт, гру слів (якщо гра слів не перекладається - передай сенс). Типографіка: тільки дефіс "-" і прямі лапки.';
   const user = `Для кожного поста поверни об'єкт {"id","uk","topic","fit"}:
 - uk: переклад українською;
@@ -297,7 +297,7 @@ async function translate(env, items) {
 - fit: 0-10, наскільки механіка поста підходить для україномовного Threads-акаунта про стосунки, психологію, роботу/IT, гроші, ШІ з самоіронією (політика і новини = 0-2).
 Поверни ТІЛЬКИ JSON-масив.
 ${JSON.stringify(list)}`;
-  const arr = await aiJson(env, sys, user, 4000);
+  const arr = await aiJson(env, sys, user, 2500);
   return arr.map(x => ({ id: String(x.id), uk: fixTypo(x.uk), topic: x.topic, fit: +x.fit || 0 }));
 }
 

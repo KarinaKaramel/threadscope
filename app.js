@@ -423,11 +423,11 @@ function renderTrends() {
     <div class="card" id="tres" style="margin-top:12px"><div class="empty">Выбери тему или введи слово</div></div>`;
   $('#trends').querySelectorAll('[data-q]').forEach(c => c.onclick = () => { $('#tq').value = c.dataset.q; search(); });
   $('#tgo').onclick = search; $('#tq').onkeydown = e => e.key === 'Enter' && search();
-  const saveW = () => { LS.set('worldCfg', { minEng: +$('#wmin').value, maxF: +$('#wmax').value, clean: $('#wclean').checked }); renderWorld(); };
+  const saveW = () => { LS.set('worldCfg', { minEng: +$('#wmin').value, maxF: +$('#wmax').value, clean: $('#wclean').checked }); renderWorld(); translateVisible(); };
   $('#wmin').onchange = $('#wmax').onchange = $('#wclean').onchange = saveW;
   $('#wgo').onclick = () => loadWorld(true);
   renderWorld();
-  if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld();
+  if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld(); else translateVisible();
 }
 
 // ---------- мировые тренды ----------
@@ -495,23 +495,32 @@ function worldFiltered() {
   }).slice(0, 40);
 }
 async function translateVisible() {
-  const need = worldFiltered().filter(i => !S.tr[i.id]).slice(0, 45);
-  for (let k = 0; k < need.length; k += 15) {
-    if ($('#wstat')) $('#wstat').textContent = `Перевожу ${k + 1}-${Math.min(k + 15, need.length)} из ${need.length}…`;
+  const need = worldFiltered().filter(i => !S.tr[i.id]).slice(0, 40);
+  if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
+  const chunks = []; for (let k = 0; k < need.length; k += 5) chunks.push(need.slice(k, k + 5));
+  let done = 0, failed = 0;
+  const st = () => { if ($('#wstat')) $('#wstat').textContent = `Перевожу: ${done} из ${need.length}…`; };
+  st();
+  const run = async ch => {
     try {
-      const r = await api('/translate', { method: 'POST', body: { items: need.slice(k, k + 15).map(i => ({ id: i.id, text: i.text })) } });
+      const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 60000);
+      const res = await fetch(S.worker.replace(/\/$/, '') + '/translate', { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Key': S.key }, body: JSON.stringify({ items: ch.map(i => ({ id: i.id, text: i.text })) }) });
+      clearTimeout(to);
+      const r = await res.json(); if (r.error) throw new Error(r.error);
       for (const t of r) S.tr[t.id] = t;
-      LS.set('tr', S.tr); renderWorld();
-    } catch (e) { if ($('#wstat')) $('#wstat').textContent = 'Перевод: ' + e.message; return; }
-  }
-  if ($('#wstat')) $('#wstat').textContent = '';
+      LS.set('tr', S.tr);
+    } catch { failed++; }
+    done += ch.length; st(); renderWorld();
+  };
+  for (let k = 0; k < chunks.length; k += 3) await Promise.all(chunks.slice(k, k + 3).map(run));
+  if ($('#wstat')) $('#wstat').textContent = failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
 }
 const LANGS = { en: 'англ', es: 'исп', de: 'нем', ja: 'яп', fr: 'фр', pt: 'порт', it: 'ит', nl: 'нид', pl: 'пол', ru: 'рус', ko: 'кор', zh: 'кит', tr: 'тур', sv: 'швед', fi: 'фин', cs: 'чеш' };
 function renderWorld() {
   const box = $('#wres'); if (!box) return;
   if (!S.world) { box.innerHTML = '<div class="card empty">Ищу залетевшие посты…</div>'; return; }
   const list = worldFiltered();
-  if ($('#wstat') && !$('#wstat').textContent.startsWith('Перевожу')) $('#wstat').textContent = `найдено ${list.length}`;
+  if ($('#wstat') && !/Перевожу|часть/.test($('#wstat').textContent)) $('#wstat').textContent = `найдено ${list.length}`;
   box.innerHTML = list.length ? `<div class="card">${list.map(i => { const t = S.tr[i.id]; return `
     <div class="result" id="w-${btoa(unescape(encodeURIComponent(i.id))).replace(/[^a-z0-9]/gi, '').slice(-16)}">
       <div class="meta">${i.src} · <b>${esc(i.name || i.author)}</b> @${esc(i.author)} · ${fmt(i.followers)} подп. · ${LANGS[(i.lang || '').slice(0, 2)] || i.lang || '?'} · ${kyiv(i.at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}

@@ -264,12 +264,37 @@ async function claude(key, model, system, user, maxTokens) {
   return aiText(data);
 }
 
+async function openai(key, model, system, user, maxTokens) {
+  const h = { 'Authorization': 'Bearer ' + key, 'content-type': 'application/json' };
+  let res = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: h, body: JSON.stringify({ model, max_completion_tokens: maxTokens, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) });
+  let data = await res.json().catch(() => ({}));
+  if (res.ok) return data.choices?.[0]?.message?.content || '';
+  if (res.status === 401) throw new ApiError('ChatGPT: неверный API-ключ', 400);
+  // запасной путь — Responses API
+  res = await fetch('https://api.openai.com/v1/responses', { method: 'POST', headers: h, body: JSON.stringify({ model, instructions: system, input: user, max_output_tokens: maxTokens }) });
+  data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError('ChatGPT: ' + (data.error?.message || 'HTTP ' + res.status), 502);
+  return data.output_text || (data.output || []).flatMap(o => (o.content || []).map(c => c.text || '')).join('\n');
+}
+async function openaiModels(key) {
+  const res = await fetch('https://api.openai.com/v1/models', { headers: { 'Authorization': 'Bearer ' + key } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError('ChatGPT: ' + (data.error?.message || 'HTTP ' + res.status), 400);
+  return (data.data || []).map(m => m.id).filter(id => /^(gpt|chat|o\d)/.test(id) && !/(audio|realtime|transcribe|tts|image|search|embedding|moderation|codex|instruct|cyber|law|rosalind)/.test(id)).sort().reverse();
+}
+const providerOf = cfg => cfg?.provider || (cfg?.anthropicKey ? 'claude' : 'workers-ai');
+
 // tier: 'write' (посты/ответы) или 'fast' (перевод, разбор)
 async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) {
   const cfg = await getCfg(env);
-  if (cfg?.anthropicKey) {
+  const prov = providerOf(cfg);
+  if (prov === 'claude' && cfg.anthropicKey) {
     const model = tier === 'fast' ? (cfg.fastModel || 'claude-haiku-5-5') : (cfg.writeModel || 'claude-sonnet-5-5');
     return { text: await claude(cfg.anthropicKey, model, system, user, maxTokens), model };
+  }
+  if (prov === 'openai' && cfg.openaiKey) {
+    const model = tier === 'fast' ? cfg.openaiFast : cfg.openaiWrite;
+    return { text: await openai(cfg.openaiKey, model, system, user, Math.max(maxTokens, 4000)), model };
   }
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   const models = [
@@ -286,7 +311,7 @@ async function aiJson(env, system, user, opts) {
   let lastErr;
   for (let i = 0; i < 2; i++) {
     try { const r = await ai(env, system, user, opts); const arr = extractJson(r.text); if (Array.isArray(arr) && arr.length) return { arr, model: r.model }; lastErr = new Error('ИИ вернул не JSON'); }
-    catch (e) { lastErr = e; if (e.message?.startsWith('Claude:')) break; }
+    catch (e) { lastErr = e; if (/^(Claude|ChatGPT):/.test(e.message || '')) break; }
   }
   throw lastErr;
 }
@@ -341,6 +366,17 @@ ${topic ? 'Тема: ' + topic + '\n' : 'Теми різні, з її ніш.\n'
 Поверни ТІЛЬКИ JSON-масив.`;
   const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 5000 });
   return { model, drafts: arr.filter(x => x && (x.text || typeof x === 'string')).map(x => ({ text: strOf(x.text ?? x), topic_tag: fixTypo(x.topic_tag || ''), why: fixTypo(x.why || ''), score: +x.score || null })).slice(0, count) };
+}
+
+
+async function improve(env, { text, hint = '', tag = '' }) {
+  const p = await getPrefs(env);
+  const user = `Ось чернетка поста Карини:\n"${text}"\n${tag ? 'Тема: ' + tag + '\n' : ''}${hint ? 'Що вона хоче змінити: ' + hint + '\n' : ''}
+Покращ її для алгоритму Threads, зберігши її голос і головну думку (не підміняй ідею своєю). Що можна робити: сильніший гачок у першому рядку, коротше і щільніше, точніша деталь, різкіший поворот у кінці, конкретний привід відповісти (без штучних питань), прибрати воду, канцелярит, суржик, довгі тире.
+Дай 3 різні варіанти: 1) мінімальна правка, 2) сильніший поворот, 3) сміливіша версія.
+Поверни ТІЛЬКИ JSON-масив з 3 об'єктів {"text": покращений пост до 280 символів, "note": що змінено, коротко російською}.`;
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2500 });
+  return { model, variants: arr.map(x => ({ text: strOf(x.text ?? x), note: fixTypo(x.note || '') })).filter(v => v.text).slice(0, 3) };
 }
 
 async function translate(env, items) {
@@ -435,7 +471,7 @@ export default {
         let followers = null;
         try { followers = (await th(cfg.token, `/${cfg.userId}/threads_insights`, { metric: 'followers_count' })).data?.[0]?.total_value?.value; } catch {}
         const c2 = await getCfg(env);
-        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError }, ai: { provider: c2.anthropicKey ? 'claude' : 'workers-ai', writeModel: c2.writeModel || 'claude-sonnet-5-5', fastModel: c2.fastModel || 'claude-haiku-5-5' } });
+        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError }, ai: { provider: providerOf(c2), writeModel: providerOf(c2) === 'openai' ? c2.openaiWrite : (c2.writeModel || 'claude-sonnet-5-5'), fastModel: providerOf(c2) === 'openai' ? c2.openaiFast : (c2.fastModel || 'claude-haiku-5-5'), hasClaude: !!c2.anthropicKey, hasOpenai: !!c2.openaiKey } });
       }
       if (path === '/posts') return json(req, await fetchPosts(cfg, Math.min(+qs.limit || 40, 45), qs.after));
       if (path === '/insights') return json(req, await userInsights(cfg, qs.since, qs.until));
@@ -464,6 +500,7 @@ export default {
         if (!body.comment) return json(req, { error: 'Нет текста комментария' }, 400);
         return json(req, await suggest(env, body));
       }
+      if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
       if (path === '/generate' && req.method === 'POST') return json(req, await generate(env, body));
       if (path === '/prefs' && req.method === 'GET') { const p = await getPrefs(env); return json(req, { liked: p.liked.length, disliked: p.disliked.length, notes: p.notes, manual: p.manual, learnedAt: p.learnedAt || null }); }
       if (path === '/prefs' && req.method === 'POST') { const p = await getPrefs(env); p.manual = String(body.manual || '').slice(0, 3000); await putPrefs(env, p); return json(req, { ok: true }); }
@@ -479,13 +516,30 @@ export default {
         if (p.sinceLearn >= 8) ctx.waitUntil(learn(env));
         return json(req, { ok: true, liked: p.liked.length, disliked: p.disliked.length });
       }
+      if (path === '/aimodels' && req.method === 'POST') {
+        const key = body.key || cfg.openaiKey;
+        if (!key) return json(req, { error: 'Нужен API-ключ OpenAI' }, 400);
+        return json(req, { models: await openaiModels(key) });
+      }
       if (path === '/aikey' && req.method === 'POST') {
-        if (body.remove) { delete cfg.anthropicKey; await putCfg(env, cfg); return json(req, { ok: true, provider: 'workers-ai' }); }
-        const writeModel = body.writeModel || 'claude-sonnet-5-5', fastModel = body.fastModel || 'claude-haiku-5-5';
-        if (body.key) await claude(body.key, fastModel, 'Відповідай одним словом.', 'Скажи "так".', 20);
-        Object.assign(cfg, { writeModel, fastModel }, body.key ? { anthropicKey: body.key } : {});
+        const prov = body.provider || 'claude';
+        if (prov === 'workers-ai' || body.remove) { cfg.provider = 'workers-ai'; await putCfg(env, cfg); return json(req, { ok: true, provider: 'workers-ai' }); }
+        if (prov === 'claude') {
+          const writeModel = body.writeModel || 'claude-sonnet-5-5', fastModel = body.fastModel || 'claude-haiku-5-5';
+          const key = body.key || cfg.anthropicKey;
+          if (!key) return json(req, { error: 'Нужен API-ключ Anthropic' }, 400);
+          if (body.key) await claude(body.key, fastModel, 'Відповідай одним словом.', 'Скажи "так".', 20);
+          Object.assign(cfg, { provider: 'claude', writeModel, fastModel, anthropicKey: key });
+        }
+        if (prov === 'openai') {
+          const key = body.key || cfg.openaiKey;
+          if (!key) return json(req, { error: 'Нужен API-ключ OpenAI' }, 400);
+          if (!body.writeModel || !body.fastModel) return json(req, { error: 'Выбери модели' }, 400);
+          await openai(key, body.fastModel, 'Відповідай одним словом.', 'Скажи "так".', 50);
+          Object.assign(cfg, { provider: 'openai', openaiKey: key, openaiWrite: body.writeModel, openaiFast: body.fastModel });
+        }
         await putCfg(env, cfg);
-        return json(req, { ok: true, provider: cfg.anthropicKey ? 'claude' : 'workers-ai', writeModel, fastModel });
+        return json(req, { ok: true, provider: cfg.provider });
       }
       if (path === '/translate' && req.method === 'POST') return json(req, await translate(env, body.items || []));
       if (path === '/adapt' && req.method === 'POST') return json(req, await adapt(env, body));

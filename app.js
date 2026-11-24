@@ -265,7 +265,7 @@ function renderPosts() {
     return (va > vb ? 1 : va < vb ? -1 : 0) * S.sort.d;
   });
   $('#posts').innerHTML = `
-    <div class="row"><h2>Публикации</h2><span class="sp"></span><button class="ghost sm" id="csvBtn">Скачать CSV</button><button class="ghost sm" id="claudeBtn">Данные для Claude</button></div>
+    <div class="row"><h2>Публикации</h2><span class="sp"></span><button class="ghost sm" id="csvBtn">Скачать CSV</button><button class="ghost sm" id="claudeBtn">Анализ в Claude</button>${GPT()}</div>
     <p class="mut small" style="margin-top:-6px">«Кто обсуждал» считает уникальных людей в ответах без твоих собственных ответов — честная метрика разговора.</p>
     <div class="card">${postsTable(list)}</div>`;
   $('#posts').querySelectorAll('[data-sort]').forEach(th => th.onclick = () => { const k = th.dataset.sort; S.sort = { k, d: S.sort.k === k ? -S.sort.d : -1 }; renderPosts(); });
@@ -280,7 +280,7 @@ function renderPosts() {
     const csv = '﻿' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = `threads-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
   };
-  $('#claudeBtn').onclick = () => copy(claudeContext(), 'Скопировано — вставь в чат с Claude');
+  $('#claudeBtn').onclick = () => askAI(claudeContext());
 }
 
 function claudeContext(extra = '') {
@@ -289,6 +289,25 @@ function claudeContext(extra = '') {
     ps.map(p => { const x = m(p); return `- ${kyiv(p.timestamp, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} | просм ${x.views}, лайки ${x.likes}, ответы ${x.replies}, репосты ${x.reposts}, ER ${pct(x.er)}${p.topic_tag ? ', тема ' + p.topic_tag : ''}\n  "${(p.text || '').replace(/\n/g, ' / ')}"`; }).join('\n') +
     `\n\n${extra || 'Проанализируй, что работает, и предложи 5 новых постов в моём стиле.'}`;
 }
+
+
+// ---------- Отправка задания в Claude / ChatGPT (по подписке, без API) ----------
+const STYLE_EXT = `Мой стиль (Threads @karinella.karamel): украинский, разговорный, часто со строчной буквы; самоирония, точные житейские наблюдения, неожиданное сравнение, интеллектуальный сарказм, поворот в конце. Темы: отношения, психология, работа/IT, деньги/инфобизнес, ИИ, соцсети. Только дефис "-" и прямые кавычки ", без длинного тире, «ёлочек», хештегов и эмодзи-гирлянд. Без морализаторства, шаблонного SMM и искусственных вопросов вроде "що думаєте?". Алгоритм Threads: главное, чтобы людям захотелось ОТВЕТИТЬ своей историей (конкретный повод, коллекция, рейтинг, спорный тезис с нюансом), крючок в первой строке, до 280 символов, оригинально. Пиши без суржика и русизмов.`;
+function askAI(prompt, target) {
+  target = target || S.nextTarget || 'claude'; S.nextTarget = null;
+  let text = prompt;
+  if (target === 'chatgpt') text = text.replace(/\s*\((используй )?скилл threads-posts\)/g, '').replace(/\(скилл threads-posts\)/g, '') + '\n\n' + STYLE_EXT;
+  const base = target === 'chatgpt' ? 'https://chatgpt.com/' : 'https://claude.ai/new';
+  const url = text.length < 6000 ? base + '?q=' + encodeURIComponent(text) : base;
+  window.open(url, '_blank', 'noopener');
+  copy(text, text.length < 6000 ? `Открываю ${target === 'chatgpt' ? 'ChatGPT' : 'Claude'} с заданием (и скопировала его)` : `Скопировано — вставь в ${target === 'chatgpt' ? 'ChatGPT' : 'Claude'}`);
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-gpt]'); if (!b) return;
+  e.preventDefault(); const prev = b.previousElementSibling; if (!prev) return;
+  S.nextTarget = 'chatgpt'; prev.click();
+});
+const GPT = cls => `<button class="${cls || 'ghost sm'}" data-gpt>в ChatGPT</button>`;
 
 // ---------- Генератор черновиков + обучение ----------
 S.gen = LS.get('gen', []);
@@ -300,7 +319,7 @@ function genHtml() {
       <select id="gcount" style="width:auto">${[5, 10, 15].map(n => `<option ${n == LS.get('gcount', 10) ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <select id="gtopic" style="width:auto"><option value="">любые темы</option>${TOPIC_TAGS.map(t => `<option>${t}</option>`).join('')}</select>
       <input id="ghint" placeholder="пожелание: например «про понедельник», «больше колкости», «про чорну п'ятницю»" style="flex:1;min-width:200px">
-      <button class="acc" id="gbtn">✨ Сгенерировать</button>
+      <button class="acc" id="gbtn">✨ Сгенерировать</button><button class="ghost sm" id="gask">в Claude</button>${GPT()}
     </div>
     <p class="mut small" style="margin:8px 0 0">Оценивай: 👍 — в черновики, 👎 — с причиной. ИИ учитывает твои оценки и лучшие посты по статистике, а каждые 8 оценок сам обновляет правила твоего вкуса.</p>
     <div id="glist" style="margin-top:6px"></div>
@@ -308,8 +327,21 @@ function genHtml() {
   </div>`;
 }
 function setupGen() {
-  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : 'ИИ: бесплатный Workers AI') : '';
+  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : m.provider === 'openai' ? `ИИ: ChatGPT (${m.writeModel})` : 'ИИ: бесплатный Workers AI') : '';
   $('#gbtn').onclick = genDrafts;
+  $('#gask').onclick = async () => {
+    const target = S.nextTarget || 'claude'; S.nextTarget = null;
+    const w = window.open('about:blank', '_blank');
+    let p = {}; try { p = await api('/prefs'); } catch {}
+    const ps = rootPosts().filter(x => x.metrics && m(x).views >= 20);
+    const best = [...ps].sort((x, y) => (m(y).er || 0) - (m(x).er || 0)).slice(0, 5).map(x => `* "${(x.text || '').replace(/\n/g, ' / ')}" (просмотры ${m(x).views}, ответы ${m(x).replies}, ER ${pct(m(x).er)})`).join('\n');
+    const recent = byDate(rootPosts()).slice(0, 10).map(x => '* ' + (x.text || '').replace(/\n/g, ' / ')).join('\n');
+    let text = `Напиши ${$('#gcount').value} разных черновиков постов для моего украинского Threads${$('#gtopic').value ? ' на тему ' + $('#gtopic').value : ''} (скилл threads-posts).${$('#ghint').value.trim() ? '\nПожелание: ' + $('#ghint').value.trim() : ''}\n\nМои лучшие посты:\n${best || '—'}\n\nНедавние (не повторяй):\n${recent || '—'}${p.manual ? '\n\nМои правила:\n' + p.manual : ''}${p.notes ? '\n\nЧто я люблю/не люблю (по моим оценкам):\n' + p.notes : ''}\n\nДля каждого: текст, одна тема (topic tag), одна строка почему захотят ответить.`;
+    if (target === 'chatgpt') text = text.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT;
+    const base = target === 'chatgpt' ? 'https://chatgpt.com/' : 'https://claude.ai/new';
+    if (w) w.location = text.length < 6000 ? base + '?q=' + encodeURIComponent(text) : base;
+    copy(text, 'Задание скопировано — понравившиеся посты вставляй в редактор Студии');
+  };
   $('#gcount').onchange = e => LS.set('gcount', +e.target.value);
   $('#learnBox').ontoggle = e => e.target.open && loadLearn();
   renderGenList();
@@ -382,6 +414,8 @@ function renderStudio() {
         <label for="ptext">Текст поста</label>
         <textarea id="ptext" placeholder="пропоную відкрити музей фраз, після яких нічого хорошого не відбувається…">${esc(d.text)}</textarea>
         <div class="counter" id="pcount"></div>
+        <div class="row" style="margin-top:6px"><input id="ihint" placeholder="что улучшить (необязательно): короче, смешнее, острее концовка…" style="flex:1;min-width:180px;font-size:13px;padding:8px 10px"><button class="acc sm" id="impBtn">✨ Улучшить</button><button class="ghost sm" id="impAsk">в Claude</button>${GPT()}</div>
+        <div class="variants" id="impOut"></div>
         <label for="ptag">Тема (topic tag) — одна на пост</label>
         <input id="ptag" list="tags" maxlength="50" value="${esc(d.tag)}" placeholder="например: психологія">
         <datalist id="tags">${TOPIC_TAGS.map(t => `<option value="${t}">`).join('')}</datalist>
@@ -393,7 +427,7 @@ function renderStudio() {
           <button class="ghost" id="nowBtn">Опубликовать сейчас</button>
           <span class="sp"></span>
           <button class="ghost sm" id="saveDraft">В черновики</button>
-          <button class="ghost sm" id="askClaude">Задание для Claude</button>
+          <button class="ghost sm" id="askClaude">Улучшить в Claude</button>${GPT()}
         </div>
         <p class="mut small">Пост уходит в Threads только по твоей кнопке. Запланированные публикует Worker в облаке — ноутбук можно закрыть.</p>
       </div>
@@ -424,6 +458,18 @@ function renderStudio() {
     $('#studio').querySelectorAll('[data-tag]').forEach(c => c.classList.toggle('on', c.dataset.tag === tg.value.trim()));
   }
   ta.oninput = tg.oninput = wh.oninput = update; update();
+  $('#impBtn').onclick = async () => {
+    const text = ta.value.trim(); if (!text) return toast('Сначала напиши или выбери черновик');
+    const b = $('#impBtn'); b.disabled = true; b.textContent = 'Улучшаю…'; $('#impOut').innerHTML = '';
+    try {
+      const r = await api('/improve', { method: 'POST', body: { text, tag: tg.value.trim(), hint: $('#ihint').value.trim() } });
+      $('#impOut').innerHTML = r.variants.map((v, k) => { const sc = analyzePost(v.text, tg.value.trim(), null).score; return `<div class="variant"><div style="flex:1"><textarea>${esc(v.text)}</textarea><div class="small mut">${esc(v.note)} · <span class="pill ${sc >= 80 ? 'ok' : ''}">алгоритм ${sc}</span></div></div><div class="acts"><button class="sm" data-use="${k}">Взять</button><button class="ghost sm" data-dr="${k}">В черновики</button></div></div>`; }).join('');
+      $('#impOut').querySelectorAll('[data-use]').forEach(x => x.onclick = () => { const v = x.closest('.variant').querySelector('textarea').value.trim(); feedback(text, 'no', ['улучшенная версия лучше']); feedback(v, 'ok', []); ta.value = v; update(); $('#impOut').innerHTML = ''; toast('Текст заменён ✓'); });
+      $('#impOut').querySelectorAll('[data-dr]').forEach(x => x.onclick = () => { addDraft(x.closest('.variant').querySelector('textarea').value.trim(), tg.value.trim()); x.disabled = true; });
+    } catch (e) { $('#impOut').innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
+    finally { b.disabled = false; b.textContent = '✨ Ещё варианты'; }
+  };
+  $('#impAsk').onclick = () => { const t = ta.value.trim(); if (!t) return toast('Сначала напиши текст'); askAI(`Улучши этот мой черновик для алгоритма Threads (скилл threads-posts). Сохрани мою мысль и голос, дай 3 варианта: минимальная правка, сильнее поворот, смелее.${$('#ihint').value.trim() ? '\nЧто хочу изменить: ' + $('#ihint').value.trim() : ''}\n\n"${t}"`); };
   window.__loadEditor = (text, tag) => { ta.value = text; tg.value = tag || ''; update(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); };
   setupGen();
   const valid = () => {
@@ -450,10 +496,11 @@ function renderStudio() {
     finally { b.disabled = false; b.textContent = 'Опубликовать сейчас'; }
   };
   $('#saveDraft').onclick = () => { const p = valid(); if (!p) return; S.drafts.unshift({ id: Date.now(), ...p }); LS.set('drafts', S.drafts); ta.value = ''; update(); renderDrafts(); toast('Сохранено'); };
-  $('#askClaude').onclick = () => copy(claudeContext(ta.value.trim() ? `Улучши этот черновик для алгоритма Threads, сохрани мой стиль, дай 3 варианта:\n"${ta.value.trim()}"` : ''), 'Скопировано — вставь в чат с Claude');
+  $('#askClaude').onclick = () => askAI(claudeContext(ta.value.trim() ? `Улучши этот черновик для алгоритма Threads, сохрани мой стиль, дай 3 варианта:\n"${ta.value.trim()}"` : ''));
   function renderDrafts() {
-    $('#drafts').innerHTML = S.drafts.length ? S.drafts.map(d => `<div class="result"><div class="t">${esc(d.text)}</div><div class="row small" style="margin-top:6px">${d.topic_tag ? `<span class="pill">${esc(d.topic_tag)}</span>` : ''}<span class="sp"></span><a href="#" data-use="${d.id}">в редактор</a><a href="#" data-del="${d.id}" style="color:var(--bad)">удалить</a></div></div>`).join('') : '<p class="mut small">Пусто. Сюда удобно складывать посты, которые придумал Claude.</p>';
+    $('#drafts').innerHTML = S.drafts.length ? S.drafts.map(d => `<div class="result"><div class="t">${esc(d.text)}</div><div class="row small" style="margin-top:6px">${d.topic_tag ? `<span class="pill">${esc(d.topic_tag)}</span>` : ''}<span class="sp"></span><a href="#" data-use="${d.id}">в редактор</a><a href="#" data-imp="${d.id}">✨ улучшить</a><a href="#" data-del="${d.id}" style="color:var(--bad)">удалить</a></div></div>`).join('') : '<p class="mut small">Пусто. Сюда удобно складывать посты, которые придумал Claude.</p>';
     $('#drafts').querySelectorAll('[data-use]').forEach(a => a.onclick = e => { e.preventDefault(); const d = S.drafts.find(x => x.id == a.dataset.use); ta.value = d.text; tg.value = d.topic_tag || ''; update(); ta.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    $('#drafts').querySelectorAll('[data-imp]').forEach(x => x.onclick = e => { e.preventDefault(); const d = S.drafts.find(y => y.id == x.dataset.imp); ta.value = d.text; tg.value = d.topic_tag || ''; update(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); $('#impBtn').click(); });
     $('#drafts').querySelectorAll('[data-del]').forEach(a => a.onclick = e => { e.preventDefault(); S.drafts = S.drafts.filter(x => x.id != a.dataset.del); LS.set('drafts', S.drafts); renderDrafts(); });
   }
   window.__renderDrafts = renderDrafts;
@@ -684,12 +731,12 @@ function renderWorld() {
       <div class="row small" style="margin-top:6px"><span>❤ ${fmt(i.likes)}</span><span>💬 ${fmt(i.replies)}</span><span>🔁 ${fmt(i.reposts)}</span>${i.media ? '<span class="pill">с медиа</span>' : ''}
         <a href="${esc(i.url)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span>
         ${t?.ua ? `<button class="ghost sm" data-uadraft="${esc(i.id)}">В черновики</button>` : ''}
-        <button class="acc sm" data-adapt="${esc(i.id)}">✨ Ещё идеи</button><button class="ghost sm" data-wclaude="${esc(i.id)}">в Claude</button></div>
+        <button class="acc sm" data-adapt="${esc(i.id)}">✨ Ещё идеи</button><button class="ghost sm" data-wclaude="${esc(i.id)}">в Claude</button>${GPT()}</div>
       <div class="variants" data-out="${esc(i.id)}"></div>
     </div>`; }).join('')}</div>` : '<div class="card empty">Под эти фильтры ничего нет — ослабь фильтры или нажми «Найти свежее»</div>';
   box.querySelectorAll('[data-adapt]').forEach(b => b.onclick = () => adaptIdea(b.dataset.adapt, b));
   box.querySelectorAll('[data-uadraft]').forEach(b => b.onclick = () => { addDraft(S.tr[b.dataset.uadraft].ua, ''); b.disabled = true; b.textContent = 'В черновиках ✓'; });
-  box.querySelectorAll('[data-wclaude]').forEach(b => b.onclick = () => { const i = S.world.find(x => x.id === b.dataset.wclaude); copy(`Этот пост залетел в ${i.src} (${langName(langOf(i))}, ${fmt(i.likes)} лайков, ${fmt(i.replies)} ответов, у автора ${fmt(i.followers)} подписчиков):\n"${i.text}"\n${i.url}\n\nНе копируй — возьми механику и придумай 5 оригинальных постов для моего украинского Threads (скилл threads-posts).`, 'Скопировано — вставь в чат с Claude'); });
+  box.querySelectorAll('[data-wclaude]').forEach(b => b.onclick = () => { const i = S.world.find(x => x.id === b.dataset.wclaude); askAI(`Этот пост залетел в ${i.src} (${langName(langOf(i))}, ${fmt(i.likes)} лайков, ${fmt(i.replies)} ответов, у автора ${fmt(i.followers)} подписчиков):\n"${i.text}"\n${i.url}\n\nНе копируй — возьми механику и придумай 5 оригинальных постов для моего украинского Threads (скилл threads-posts).`); });
 }
 function addDraft(text, tag) { if (!text) return; S.drafts.unshift({ id: Date.now() + Math.random(), text, topic_tag: tag || '' }); LS.set('drafts', S.drafts); window.__renderDrafts?.(); toast('В черновиках Студии ✓'); }
 
@@ -715,8 +762,8 @@ async function search() {
     if (list.length && own === list.length) $('#tnote').innerHTML = `<div class="card" style="margin-top:12px;border-color:var(--warn)"><b>Поиск видит только твои посты.</b><p class="mut small" style="margin:4px 0 0">Так Meta ограничивает приложения без расширенного доступа к threads_keyword_search. Чтобы искать чужие посты, нужно пройти App Review в Meta Developers (Advanced Access). Пока что лучше просматривать ленту темы в самом Threads, а сюда приносить идеи.</p></div>`;
     if ($('#tua').checked) list = list.filter(p => /[іїєґ]/i.test(p.text || '') || !/[ыэъё]/i.test(p.text || '') && /[а-я]/i.test(p.text || ''));
     box.innerHTML = list.length ? list.map(p => `<div class="result"><div class="meta">@${esc(p.username)} · ${kyiv(p.timestamp, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} ${p.has_replies ? '<span class="pill ok">есть ответы</span>' : ''}</div>
-      <div class="t">${esc(p.text || '')}</div><div class="row small" style="margin-top:6px"><a href="${esc(p.permalink)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span><a href="#" data-idea="${p.id}">идея ответа → Claude</a></div></div>`).join('') : '<div class="empty">Ничего не нашлось</div>';
-    box.querySelectorAll('[data-idea]').forEach(a => a.onclick = e => { e.preventDefault(); const p = list.find(x => x.id === a.dataset.idea); copy(`Придумай 3 варианта моего ответа на этот пост в Threads (мой стиль: украинский, разговорный, со строчной, самоирония, точное наблюдение, без морализаторства). Ответ должен добавлять свой поворот, чтобы люди переходили в мой профиль.\n\n@${p.username}: "${p.text}"\n${p.permalink}`, 'Скопировано — вставь в чат с Claude'); });
+      <div class="t">${esc(p.text || '')}</div><div class="row small" style="margin-top:6px"><a href="${esc(p.permalink)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span><a href="#" data-idea="${p.id}">идея ответа → Claude</a> <a href="#" data-gpt>→ ChatGPT</a></div></div>`).join('') : '<div class="empty">Ничего не нашлось</div>';
+    box.querySelectorAll('[data-idea]').forEach(a => a.onclick = e => { e.preventDefault(); const p = list.find(x => x.id === a.dataset.idea); askAI(`Придумай 3 варианта моего ответа на этот пост в Threads (мой стиль: украинский, разговорный, со строчной, самоирония, точное наблюдение, без морализаторства). Ответ должен добавлять свой поворот, чтобы люди переходили в мой профиль.\n\n@${p.username}: "${p.text}"\n${p.permalink}`); });
   } catch (e) { box.innerHTML = `<div class="empty">Ошибка: ${esc(e.message)}</div>`; }
 }
 
@@ -752,7 +799,7 @@ function renderReplies() {
   $('#rall').onchange = e => { LS.set('inboxAll', e.target.checked); refreshInbox(); };
   $('#rload').onclick = refreshInbox;
   $('#rlist').querySelectorAll('[data-gen]').forEach(b => b.onclick = () => generate(b.dataset.gen));
-  $('#rlist').querySelectorAll('[data-claude]').forEach(b => b.onclick = () => { const { g, c } = findC(b.dataset.claude); copy(`Придумай 3 варианта моего ответа на комментарий под моим постом в Threads (используй скилл threads-posts).\n\nМой пост: "${g.post.text}"\n${c.chain.map(x => (x.mine ? 'я' : '@' + x.username) + ': "' + x.text + '"').join('\n')}\n@${c.username}: "${c.text}"`, 'Скопировано — вставь в чат с Claude'); });
+  $('#rlist').querySelectorAll('[data-claude]').forEach(b => b.onclick = () => { const { g, c } = findC(b.dataset.claude); askAI(`Придумай 3 варианта моего ответа на комментарий под моим постом в Threads (используй скилл threads-posts).\n\nМой пост: "${g.post.text}"\n${c.chain.map(x => (x.mine ? 'я' : '@' + x.username) + ': "' + x.text + '"').join('\n')}\n@${c.username}: "${c.text}"`); });
   $('#rlist').querySelectorAll('[data-skip]').forEach(b => b.onclick = () => { S.done[b.dataset.skip] = 'skip'; LS.set('doneReplies', S.done); updateBadge(); b.closest('.cm').style.opacity = .4; });
   updateBadge();
 }
@@ -765,7 +812,7 @@ function commentHtml(g, c) {
     <div style="white-space:pre-wrap;margin-top:2px">${esc(c.text)}</div>
     <div class="row" style="margin-top:8px">
       <button class="acc sm" data-gen="${c.id}">✨ Варианты ответа</button>
-      <button class="ghost sm" data-claude="${c.id}">в Claude</button>
+      <button class="ghost sm" data-claude="${c.id}">в Claude</button>${GPT()}
       ${c.permalink ? `<a class="small" href="${esc(c.permalink)}" target="_blank" rel="noopener">открыть ↗</a>` : ''}
       <span class="sp"></span>${done ? '' : `<button class="ghost sm" data-skip="${c.id}">не отвечать</button>`}
     </div>
@@ -829,23 +876,23 @@ function renderConnect() {
         <p class="mut small">Токен хранится только в твоём Cloudflare Worker, не на этом сайте и не на GitHub. Ключ доступа хранится в этом браузере — на телефоне введи его один раз.</p>
       </div>
     </div>
-    <h2>ИИ</h2>
+    <h2>ИИ на сайте</h2>
     <div class="grid two">
       <div class="card">
-        <div class="small" id="aistat">${S.me?.ai ? (S.me.ai.provider === 'claude' ? `✅ Подключён <b>Claude</b>: пишет ${esc(S.me.ai.writeModel)}, переводит ${esc(S.me.ai.fastModel)}` : 'Сейчас работает бесплатный <b>Workers AI</b>. Подключи Claude, чтобы посты и ответы писал я.') : ''}</div>
-        <label>Anthropic API key</label><input id="akey" type="password" placeholder="sk-ant-…" autocomplete="off">
-        <label>Модель для постов и ответов</label><select id="awrite"><option value="claude-sonnet-5-5">Claude Sonnet 5.5 — лучший баланс (рекомендую)</option><option value="claude-opus-5-5">Claude Opus 5.5 — самый умный, дороже</option><option value="claude-haiku-5-5">Claude Haiku 5.5 — самый дешёвый</option></select>
-        <label>Модель для перевода трендов</label><select id="afast"><option value="claude-haiku-5-5">Claude Haiku 5.5 (рекомендую)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
-        <div class="row" style="margin-top:14px"><button class="acc" id="asave">Подключить Claude</button><button class="ghost" id="aremove">Вернуть бесплатный ИИ</button></div>
+        <div class="small" id="aistat">${(() => { const x = S.me?.ai; if (!x) return ''; return x.provider === 'claude' ? `✅ Работает <b>Claude</b>: пишет ${esc(x.writeModel)}, переводит ${esc(x.fastModel)}` : x.provider === 'openai' ? `✅ Работает <b>ChatGPT</b>: пишет ${esc(x.writeModel)}, переводит ${esc(x.fastModel)}` : 'Сейчас работает бесплатный <b>Workers AI</b> (слабее и медленнее).'; })()}</div>
+        <div class="chips" style="margin-top:10px" id="provChips">
+          <span class="chip" data-prov="claude">Claude</span><span class="chip" data-prov="openai">ChatGPT (OpenAI)</span><span class="chip" data-prov="workers-ai">Бесплатный</span>
+        </div>
+        <div id="provForm"></div>
       </div>
       <div class="card">
-        <h3>Как подключить Claude</h3>
+        <h3>Подписка и API — это разное</h3>
+        <p class="small">Подписку ChatGPT Plus или Claude Pro сайт использовать не может — так устроены сервисы. Есть два пути:</p>
         <ol class="steps small">
-          <li>Открой <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com → API Keys</a> (вход тем же аккаунтом или новым).</li>
-          <li>В Billing пополни баланс — хватит $5: 10 черновиков на Sonnet стоят примерно 1-3 цента, перевод 40 трендов на Haiku — меньше цента.</li>
-          <li>Create Key → скопируй ключ (sk-ant-…) и вставь слева.</li>
+          <li><b>Кнопки «в Claude» / «в ChatGPT»</b> по всему сайту — открывают чат с готовым заданием, работает по твоей подписке бесплатно, но ответ переносишь вручную.</li>
+          <li><b>API-ключ</b> — ИИ работает прямо на сайте (генератор, обучение, отбор трендов). Платится отдельно, центы за пачку черновиков. Claude: <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a> · OpenAI: <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> (нужно пополнить баланс в Billing, от $5).</li>
         </ol>
-        <p class="mut small">Ключ хранится только в твоём Cloudflare Worker. Подписка Claude Pro/Max сюда не подходит — сайту нужен отдельный API-ключ.</p>
+        <p class="mut small">Ключи хранятся только в твоём Cloudflare Worker.</p>
       </div>
     </div>`;
   $('#csave').onclick = async () => {
@@ -856,15 +903,50 @@ function renderConnect() {
       await syncAll(); toast('Готово ✓'); location.hash = '#overview';
     } catch (e) { $('#cstat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
   };
-  if (S.me?.ai) { $('#awrite').value = S.me.ai.writeModel; $('#afast').value = S.me.ai.fastModel; }
-  $('#asave').onclick = async () => {
-    const key = $('#akey').value.trim();
-    if (!key && S.me?.ai?.provider !== 'claude') return toast('Вставь API key');
-    const b = $('#asave'); b.disabled = true; b.textContent = 'Проверяю…';
-    try { await api('/aikey', { method: 'POST', body: { key, writeModel: $('#awrite').value, fastModel: $('#afast').value } }); $('#akey').value = ''; S.me = await api('/me'); LS.set('me', S.me); toast('Claude подключён ✓'); renderConnect(); }
-    catch (e) { $('#aistat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; b.disabled = false; b.textContent = 'Подключить Claude'; }
+  const prov0 = S.me?.ai?.provider || 'claude';
+  const showProv = prov => {
+    $('#provChips').querySelectorAll('[data-prov]').forEach(c => c.classList.toggle('on', c.dataset.prov === prov));
+    const x = S.me?.ai || {};
+    const f = $('#provForm');
+    if (prov === 'claude') f.innerHTML = `
+      <label>Anthropic API key ${x.hasClaude ? '<span class="mut">(уже сохранён — оставь пустым, чтобы не менять)</span>' : ''}</label><input id="akey" type="password" placeholder="sk-ant-…" autocomplete="off">
+      <label>Модель для постов и ответов</label><select id="awrite"><option value="claude-sonnet-5-5">Claude Sonnet 5.5 — лучший баланс (рекомендую)</option><option value="claude-opus-5-5">Claude Opus 5.5 — самый умный, дороже</option><option value="claude-haiku-5-5">Claude Haiku 5.5 — самый дешёвый</option></select>
+      <label>Модель для оценки и перевода трендов</label><select id="afast"><option value="claude-haiku-5-5">Claude Haiku 5.5 (рекомендую)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
+      <div class="row" style="margin-top:14px"><button class="acc" id="asave">Включить Claude</button></div>`;
+    if (prov === 'openai') f.innerHTML = `
+      <label>OpenAI API key ${x.hasOpenai ? '<span class="mut">(уже сохранён — оставь пустым, чтобы не менять)</span>' : ''}</label><input id="akey" type="password" placeholder="sk-…" autocomplete="off">
+      <div class="row" style="margin-top:8px"><button class="ghost sm" id="aload">Загрузить доступные модели</button><span class="mut small" id="aloadst"></span></div>
+      <label>Модель для постов и ответов</label><select id="awrite"><option value="">— сначала загрузи модели —</option></select>
+      <label>Модель для оценки и перевода трендов (дешёвая)</label><select id="afast"><option value="">—</option></select>
+      <div class="row" style="margin-top:14px"><button class="acc" id="asave">Включить ChatGPT</button></div>`;
+    if (prov === 'workers-ai') f.innerHTML = `<p class="small mut" style="margin-top:10px">Бесплатно, без ключей, но пишет слабее и медленнее оценивает тренды.</p><div class="row"><button class="acc" id="asave">Включить бесплатный</button></div>`;
+    if (prov === 'claude' && x.provider === 'claude') { $('#awrite').value = x.writeModel; $('#afast').value = x.fastModel; }
+    const fill = (models, w, fa) => {
+      const pickW = w || models.find(mm => /sol/.test(mm)) || models.find(mm => /^gpt-[5-9]/.test(mm) && !/mini|nano|luna/.test(mm)) || models[0];
+      const pickF = fa || models.find(mm => /luna|mini/.test(mm)) || models[0];
+      $('#awrite').innerHTML = models.map(mm => `<option ${mm === pickW ? 'selected' : ''}>${mm}</option>`).join('');
+      $('#afast').innerHTML = models.map(mm => `<option ${mm === pickF ? 'selected' : ''}>${mm}</option>`).join('');
+    };
+    if (prov === 'openai') {
+      $('#aload').onclick = async () => {
+        $('#aloadst').textContent = 'Загружаю…';
+        try { const r = await api('/aimodels', { method: 'POST', body: { key: $('#akey').value.trim() } }); fill(r.models, x.provider === 'openai' ? x.writeModel : '', x.provider === 'openai' ? x.fastModel : ''); $('#aloadst').textContent = `${r.models.length} моделей`; }
+        catch (e) { $('#aloadst').textContent = e.message; }
+      };
+      if (x.hasOpenai) $('#aload').click();
+    }
+    $('#asave').onclick = async () => {
+      const b = $('#asave'), label = b.textContent; b.disabled = true; b.textContent = 'Проверяю…';
+      try {
+        const body = { provider: prov };
+        if (prov !== 'workers-ai') Object.assign(body, { key: $('#akey').value.trim(), writeModel: $('#awrite').value, fastModel: $('#afast').value });
+        await api('/aikey', { method: 'POST', body });
+        S.me = await api('/me'); LS.set('me', S.me); toast('ИИ переключён ✓'); renderConnect();
+      } catch (e) { $('#aistat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; b.disabled = false; b.textContent = label; }
+    };
   };
-  $('#aremove').onclick = async () => { if (!confirm('Отключить Claude и вернуться к бесплатному ИИ?')) return; try { await api('/aikey', { method: 'POST', body: { remove: true } }); S.me = await api('/me'); LS.set('me', S.me); renderConnect(); } catch (e) { toast(e.message); } };
+  $('#provChips').querySelectorAll('[data-prov]').forEach(c => c.onclick = () => showProv(c.dataset.prov));
+  showProv(prov0);
   $('#ctoken').onclick = async () => {
     const token = $('#ct').value.trim(); if (!token) return toast('Вставь новый токен');
     try { await api('/token', { method: 'POST', body: { token } }); $('#ct').value = ''; await syncAll(); toast('Токен заменён ✓'); }

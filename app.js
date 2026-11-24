@@ -483,8 +483,8 @@ const TREND_PRESETS = {
   'ИИ': ['штучний інтелект', 'chatgpt', 'нейромережа'],
   'Threads': ['укртредс', 'тредс', 'підписники'],
 };
-const WDEF = { bs: true, ms: true, langs: [], topics: [], minLikes: 100, minReplies: 0, minF: 0, maxF: 3000, hours: 72, minFit: 0, media: 'any', sort: 'fit', clean: true };
-const wcfg = () => ({ ...WDEF, ...LS.get('worldCfg2', {}) });
+const WDEF = { bs: true, ms: true, langs: [], topics: [], minLikes: 50, minReplies: 0, minF: 0, maxF: 5000, hours: 72, minChance: 6, media: 'any', sort: 'chance', clean: true, nolocal: true };
+const wcfg = () => ({ ...WDEF, ...LS.get('worldCfg3', {}) });
 const LANG_NAMES = { en: '🇬🇧 английский', es: '🇪🇸 испанский', de: '🇩🇪 немецкий', ja: '🇯🇵 японский', fr: '🇫🇷 французский', pt: '🇧🇷 португальский', it: '🇮🇹 итальянский', nl: '🇳🇱 нидерландский', pl: '🇵🇱 польский', ru: '🇷🇺 русский', ko: '🇰🇷 корейский', zh: '🇨🇳 китайский', tr: '🇹🇷 турецкий', sv: '🇸🇪 шведский', fi: '🇫🇮 финский', cs: '🇨🇿 чешский', da: '🇩🇰 датский', no: '🇳🇴 норвежский', nb: '🇳🇴 норвежский', uk: '🇺🇦 украинский', ca: 'каталанский', eu: 'баскский', gl: 'галисийский', el: '🇬🇷 греческий', he: '🇮🇱 иврит', ar: 'арабский', hi: '🇮🇳 хинди', id: '🇮🇩 индонезийский', th: '🇹🇭 тайский', vi: '🇻🇳 вьетнамский', hu: '🇭🇺 венгерский', ro: '🇷🇴 румынский' };
 const langOf = i => ((S.tr[i.id]?.lang || i.lang || '').slice(0, 2).toLowerCase()) || '?';
 const langName = c => LANG_NAMES[c] || (c === '?' ? 'язык не указан' : c);
@@ -495,22 +495,23 @@ function renderTrends() {
   const num = (id, label, vals, cur) => `<label class="flt"><span>${label}</span><select id="${id}">${vals.map(v => `<option value="${v[0] ?? v}" ${String(v[0] ?? v) === String(cur) ? 'selected' : ''}>${v[1] ?? v}</option>`).join('')}</select></label>`;
   $('#trends').innerHTML = `
     <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><span id="wstat" class="mut small"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button></div>
-    <p class="mut small" style="margin-top:-6px">Посты обычных людей из Bluesky и Mastodon, которые собрали много реакций. ИИ переводит их и переписывает на украинский лад — с нашими реалиями и в твоём стиле. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях.</p>
+    <p class="mut small" style="margin-top:-6px">Посты обычных людей из Bluesky и Mastodon, которые собрали много реакций. ИИ оценивает, есть ли у них шанс залететь в рекомендации украинского Threads (понятно ли без контекста страны, захочется ли ответить, свежо ли), отсеивает локальное и переписывает лучшие по-нашему. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях.</p>
     <div class="card">
       <div class="fgrid">
         ${num('f_minLikes', 'лайков от', [0, 50, 100, 200, 500, 1000, 5000], W.minLikes)}
         ${num('f_minReplies', 'комментов от', [0, 5, 10, 25, 50, 100, 500], W.minReplies)}
         ${num('f_minF', 'подписчиков от', [0, 50, 100, 500, 1000], W.minF)}
-        ${num('f_maxF', 'подписчиков до', [300, 1000, 3000, 10000, 50000], W.maxF)}
+        ${num('f_maxF', 'подписчиков до', [300, 1000, 3000, 5000, 10000, 50000], W.maxF)}
         ${num('f_hours', 'свежесть', [[12, '12 часов'], [24, 'сутки'], [48, '2 дня'], [72, '3 дня']], W.hours)}
-        ${num('f_minFit', 'подходит мне от', [[0, 'любое'], [4, '4/10'], [6, '6/10'], [8, '8/10']], W.minFit)}
+        ${num('f_minChance', 'шанс в укр. Threads от', [[0, 'любой'], [5, '5/10'], [6, '6/10'], [7, '7/10'], [8, '8/10']], W.minChance)}
         ${num('f_media', 'формат', [['any', 'любой'], ['text', 'только текст'], ['media', 'с картинкой/видео']], W.media)}
-        ${num('f_sort', 'сортировка', [['fit', 'подходит мне'], ['noname', 'ноунейм-индекс'], ['eng', 'больше реакций'], ['replies', 'больше комментов'], ['fresh', 'свежее']], W.sort)}
+        ${num('f_sort', 'сортировка', [['chance', 'шанс залететь у нас'], ['fit', 'подходит мне'], ['talk', 'больше обсуждают'], ['noname', 'ноунейм-индекс'], ['eng', 'больше реакций'], ['fresh', 'свежее']], W.sort)}
       </div>
       <div class="row small" style="margin-top:10px;gap:14px">
         <label class="chk"><input type="checkbox" id="f_bs" ${W.bs ? 'checked' : ''}> Bluesky</label>
         <label class="chk"><input type="checkbox" id="f_ms" ${W.ms ? 'checked' : ''}> Mastodon</label>
-        <label class="chk"><input type="checkbox" id="f_clean" ${W.clean ? 'checked' : ''}> без политики и новостей</label>
+        <label class="chk"><input type="checkbox" id="f_clean" ${W.clean ? 'checked' : ''}> без политики, войны, новостей, 18+</label>
+        <label class="chk"><input type="checkbox" id="f_nolocal" ${W.nolocal ? 'checked' : ''}> без локального (фандомы, местные мемы, суть в картинке)</label>
       </div>
       <div class="row small" style="margin-top:10px"><span class="mut" style="width:70px">языки</span><div class="chips" id="f_langs"></div></div>
       <div class="row small" style="margin-top:6px"><span class="mut" style="width:70px">темы</span><div class="chips" id="f_topics">${WTOPICS.map(t => `<span class="chip ${W.topics.includes(t) ? 'on' : ''}" data-topic="${t}">${t}</span>`).join('')}</div></div>
@@ -532,13 +533,13 @@ function renderTrends() {
   $('#tgo').onclick = search; $('#tq').onkeydown = e => e.key === 'Enter' && search();
   const save = () => {
     const c = wcfg();
-    for (const k of ['minLikes', 'minReplies', 'minF', 'maxF', 'hours', 'minFit']) c[k] = +$('#f_' + k).value;
+    for (const k of ['minLikes', 'minReplies', 'minF', 'maxF', 'hours', 'minChance']) c[k] = +$('#f_' + k).value;
     c.media = $('#f_media').value; c.sort = $('#f_sort').value;
-    c.bs = $('#f_bs').checked; c.ms = $('#f_ms').checked; c.clean = $('#f_clean').checked;
-    LS.set('worldCfg2', c); renderWorld(); translateVisible();
+    c.bs = $('#f_bs').checked; c.ms = $('#f_ms').checked; c.clean = $('#f_clean').checked; c.nolocal = $('#f_nolocal').checked;
+    LS.set('worldCfg3', c); renderWorld(); translateVisible();
   };
-  $('#trends').querySelectorAll('.fgrid select, #f_bs, #f_ms, #f_clean').forEach(el => el.onchange = save);
-  $('#f_topics').querySelectorAll('[data-topic]').forEach(ch => ch.onclick = () => { const c = wcfg(); const t = ch.dataset.topic; c.topics = c.topics.includes(t) ? c.topics.filter(x => x !== t) : [...c.topics, t]; LS.set('worldCfg2', c); ch.classList.toggle('on'); renderWorld(); });
+  $('#trends').querySelectorAll('.fgrid select, #f_bs, #f_ms, #f_clean, #f_nolocal').forEach(el => el.onchange = save);
+  $('#f_topics').querySelectorAll('[data-topic]').forEach(ch => ch.onclick = () => { const c = wcfg(); const t = ch.dataset.topic; c.topics = c.topics.includes(t) ? c.topics.filter(x => x !== t) : [...c.topics, t]; LS.set('worldCfg3', c); ch.classList.toggle('on'); renderWorld(); });
   $('#wgo').onclick = () => loadWorld(true);
   renderWorld();
   if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld(); else translateVisible();
@@ -549,7 +550,7 @@ function renderLangChips() {
   for (const i of baseFiltered(true)) { const l = langOf(i); cnt[l] = (cnt[l] || 0) + 1; }
   const langs = Object.entries(cnt).sort((a, b) => b[1] - a[1]);
   box.innerHTML = `<span class="chip ${W.langs.length ? '' : 'on'}" data-lang="*">все</span>` + langs.map(([l, n]) => `<span class="chip ${W.langs.includes(l) ? 'on' : ''}" data-lang="${l}">${esc(langName(l))} · ${n}</span>`).join('');
-  box.querySelectorAll('[data-lang]').forEach(ch => ch.onclick = () => { const c = wcfg(); const l = ch.dataset.lang; c.langs = l === '*' ? [] : c.langs.includes(l) ? c.langs.filter(x => x !== l) : [...c.langs, l]; LS.set('worldCfg2', c); renderWorld(); translateVisible(); });
+  box.querySelectorAll('[data-lang]').forEach(ch => ch.onclick = () => { const c = wcfg(); const l = ch.dataset.lang; c.langs = l === '*' ? [] : c.langs.includes(l) ? c.langs.filter(x => x !== l) : [...c.langs, l]; LS.set('worldCfg3', c); renderWorld(); translateVisible(); });
 }
 
 // ---------- мировые тренды ----------
@@ -566,26 +567,30 @@ async function loadWorld(force) {
     const items = [];
     setS('Bluesky…');
     let cursor;
-    for (let i = 0; i < 4; i++) {
-      const u = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot&limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+    const FEEDS = [['at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot', 4], ['at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/hot-classic', 2], ['at://did:plc:wqowuobffl66jv3kpsvo7ak4/app.bsky.feed.generator/the-algorithm', 2]];
+    for (const [feed, pages] of FEEDS) { cursor = undefined;
+    for (let i = 0; i < pages; i++) {
+      const u = 'https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed?feed=' + feed + '&limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
       const r = await fetch(u).then(r => r.json()).catch(() => null);
       if (!r?.feed) break;
       for (const { post: p } of r.feed) {
+        if (p.record?.reply) continue;
         const text = p.record?.text || '';
         items.push({ id: 'bs:' + p.uri, src: 'Bluesky', text, lang: (p.record?.langs || [])[0] || '', likes: p.likeCount || 0, replies: p.replyCount || 0, reposts: (p.repostCount || 0) + (p.quoteCount || 0), author: p.author.handle, name: p.author.displayName || '', did: p.author.did, followers: null, url: `https://bsky.app/profile/${p.author.handle}/post/${p.uri.split('/').pop()}`, at: p.record?.createdAt || p.indexedAt, media: !!p.embed });
       }
       cursor = r.cursor; if (!cursor) break;
-    }
+    } }
     setS('Mastodon…');
-    for (const inst of ['mastodon.social', 'mastodon.online']) {
-      for (const off of [0, 40, 80]) {
+    for (const inst of ['mastodon.social', 'mastodon.online', 'mas.to', 'mstdn.social', 'mastodon.world']) {
+      for (const off of (inst === 'mastodon.social' ? [0, 40, 80] : [0, 40])) {
         const r = await fetch(`https://${inst}/api/v1/trends/statuses?limit=40&offset=${off}`).then(r => r.json()).catch(() => null);
         if (!Array.isArray(r) || !r.length) break;
         for (const s of r) items.push({ id: 'ms:' + s.uri, src: 'Mastodon', text: stripHtml(s.content), lang: s.language || '', likes: s.favourites_count || 0, replies: s.replies_count || 0, reposts: s.reblogs_count || 0, author: s.account.acct.includes('@') ? s.account.acct : s.account.acct + '@' + inst, name: s.account.display_name || '', followers: s.account.followers_count, url: s.url, at: s.created_at, media: !!s.media_attachments?.length });
       }
     }
     const seen = new Set();
-    let pool = items.filter(i => !seen.has(i.id) && seen.add(i.id) && now - new Date(i.at) < maxAge && i.text.length >= 25 && i.likes + i.replies + i.reposts >= 50);
+    const junk = i => /https?:\/\/|www\./i.test(i.text) || (i.text.match(/#\S+/g) || []).length >= 3 || (i.text.match(/@\S+/g) || []).length >= 3 || (i.media && i.text.length < 60) || /^(breaking|update|news|live)\b/i.test(i.text);
+    let pool = items.filter(i => !seen.has(i.id) && seen.add(i.id) && now - new Date(i.at) < maxAge && i.text.length >= 25 && i.likes + i.replies + i.reposts >= 40 && !junk(i));
     // подписчики авторов Bluesky
     setS('Проверяю авторов…');
     const dids = [...new Set(pool.filter(i => i.did).map(i => i.did))];
@@ -613,8 +618,9 @@ function baseFiltered(ignoreLang) {
     if (langOf(i) === 'uk') return false;
     if (!ignoreLang && W.langs.length && !W.langs.includes(langOf(i))) return false;
     const t = S.tr[i.id];
-    if (W.clean) { if (POLITICS.test(i.text)) return false; if (t && (['політика', 'новини'].includes(t.topic) || t.fit < 3)) return false; }
-    if (t && W.minFit && t.fit < W.minFit) return false;
+    if (W.clean) { if (POLITICS.test(i.text)) return false; if (t && (['політика', 'новини'].includes(t.topic) || (t.flags || []).some(f => ['політика', 'війна', 'новини', '18+', 'реклама', 'росія'].includes(f)))) return false; }
+    if (W.nolocal && t && (t.flags || []).some(f => ['локальне', 'фандом', 'картинка'].includes(f))) return false;
+    if (t && t.chance != null && W.minChance && t.chance < W.minChance) return false;
     if (t && W.topics.length && !W.topics.includes(t.topic)) return false;
     return true;
   });
@@ -624,12 +630,15 @@ function worldFiltered() {
   const eng = i => i.likes + i.replies + i.reposts;
   const noname = i => (i.likes + i.replies * 3) / (i.followers + 50);
   const fit = i => S.tr[i.id]?.fit ?? 5;
-  const by = { fit: (a, b) => fit(b) - fit(a) || noname(b) - noname(a), noname: (a, b) => noname(b) - noname(a), eng: (a, b) => eng(b) - eng(a), replies: (a, b) => b.replies - a.replies, fresh: (a, b) => new Date(b.at) - new Date(a.at) }[W.sort] || ((a, b) => 0);
+  const talk = i => i.replies / (i.likes + 20);
+  const chance = i => { const t = S.tr[i.id]; return t?.chance != null ? t.chance + Math.min(talk(i) * 4, 1.5) + Math.min(noname(i) / 4, 1) : -1; };
+  const by = { chance: (a, b) => chance(b) - chance(a), talk: (a, b) => talk(b) - talk(a), fit: (a, b) => fit(b) - fit(a) || noname(b) - noname(a), noname: (a, b) => noname(b) - noname(a), eng: (a, b) => eng(b) - eng(a), replies: (a, b) => b.replies - a.replies, fresh: (a, b) => new Date(b.at) - new Date(a.at) }[W.sort] || ((a, b) => 0);
   return baseFiltered().sort(by).slice(0, 40);
 }
 
 async function translateVisible() {
-  const need = worldFiltered().filter(i => !S.tr[i.id]?.ua).slice(0, 40);
+  const pot = i => (i.replies * 3 + i.likes) / (i.followers + 100);
+  const need = baseFiltered().filter(i => S.tr[i.id]?.chance == null).sort((a, b) => pot(b) - pot(a)).slice(0, 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
   const chunks = []; for (let k = 0; k < need.length; k += 5) chunks.push(need.slice(k, k + 5));
   let done = 0, failed = 0;
@@ -638,7 +647,7 @@ async function translateVisible() {
   const run = async ch => {
     try {
       const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 60000);
-      const res = await fetch(S.worker.replace(/\/$/, '') + '/translate', { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Key': S.key }, body: JSON.stringify({ items: ch.map(i => ({ id: i.id, text: i.text })) }) });
+      const res = await fetch(S.worker.replace(/\/$/, '') + '/translate', { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Key': S.key }, body: JSON.stringify({ items: ch.map(i => ({ id: i.id, text: i.text, likes: i.likes, replies: i.replies, media: i.media })) }) });
       clearTimeout(to);
       const r = await res.json(); if (r.error) throw new Error(r.error);
       for (const t of r) S.tr[t.id] = t;
@@ -658,7 +667,15 @@ function renderWorld() {
   box.innerHTML = list.length ? `<div class="card">${list.map(i => { const t = S.tr[i.id]; const l = langOf(i); return `
     <div class="result">
       <div class="meta"><span class="pill lang">${esc(langName(l))}</span> ${i.src} · <b>${esc(i.name || i.author)}</b> @${esc(i.author)} · ${fmt(i.followers)} подп. · ${kyiv(i.at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
-        ${t ? `<span class="pill">${esc(t.topic)}</span> <span class="pill ${t.fit >= 7 ? 'ok' : t.fit >= 4 ? '' : 'warn'}">подходит ${t.fit}/10</span>` : ''}</div>
+        ${t ? `<span class="pill">${esc(t.topic)}</span>` : ''}</div>
+      ${t?.chance != null ? `<div class="row small" style="margin-top:6px;gap:6px">
+        <span class="pill ${t.chance >= 8 ? 'ok' : t.chance >= 6 ? '' : 'warn'}" style="font-weight:700">шанс у нас ${t.chance}/10</span>
+        <span class="pill" title="понятно без контекста страны">универсально ${t.uni}</span>
+        <span class="pill" title="захочется ответить своей историей">захотят ответить ${t.reply}</span>
+        <span class="pill" title="свежесть идеи">свежесть ${t.fresh}</span>
+        <span class="pill" title="подходит твоему аккаунту">твоё ${t.fit}</span>
+        ${(t.flags || []).map(f => `<span class="pill warn">${esc(f)}</span>`).join('')}
+      </div>${t.why ? `<div class="small mut" style="margin-top:4px">${esc(t.why)}</div>` : ''}` : ''}
       ${t?.ua ? `<div class="ua"><span class="mut small">по-нашему:</span><div class="t">${esc(t.ua)}</div></div>` : ''}
       ${t ? `<div class="small" style="margin-top:6px"><span class="mut">перевод:</span> ${esc(t.uk)}</div>` : `<div class="t mut">${esc(i.text)}</div>`}
       ${t ? `<details class="small" style="margin-top:4px"><summary>оригинал (${esc(langName(l))})</summary><div class="mut" style="white-space:pre-wrap">${esc(i.text)}</div></details>` : ''}

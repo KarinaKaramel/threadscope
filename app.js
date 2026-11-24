@@ -620,7 +620,7 @@ function baseFiltered(ignoreLang) {
     const t = S.tr[i.id];
     if (W.clean) { if (POLITICS.test(i.text)) return false; if (t && (['політика', 'новини'].includes(t.topic) || (t.flags || []).some(f => ['політика', 'війна', 'новини', '18+', 'реклама', 'росія'].includes(f)))) return false; }
     if (W.nolocal && t && (t.flags || []).some(f => ['локальне', 'фандом', 'картинка'].includes(f))) return false;
-    if (t && t.chance != null && W.minChance && t.chance < W.minChance) return false;
+    if (t && t.mech != null && W.minChance && t.chance < W.minChance) return false;
     if (t && W.topics.length && !W.topics.includes(t.topic)) return false;
     return true;
   });
@@ -631,14 +631,14 @@ function worldFiltered() {
   const noname = i => (i.likes + i.replies * 3) / (i.followers + 50);
   const fit = i => S.tr[i.id]?.fit ?? 5;
   const talk = i => i.replies / (i.likes + 20);
-  const chance = i => { const t = S.tr[i.id]; return t?.chance != null ? t.chance + Math.min(talk(i) * 4, 1.5) + Math.min(noname(i) / 4, 1) : -1; };
+  const chance = i => { const t = S.tr[i.id]; if (t?.chance == null) return -1; return t.chance + (t.reply - 5) * 0.3 + (t.uni - 7) * 0.2 + (t.fresh - 5) * 0.15 + Math.min(talk(i) * 4, 1.5) + Math.min(noname(i) / 4, 1); };
   const by = { chance: (a, b) => chance(b) - chance(a), talk: (a, b) => talk(b) - talk(a), fit: (a, b) => fit(b) - fit(a) || noname(b) - noname(a), noname: (a, b) => noname(b) - noname(a), eng: (a, b) => eng(b) - eng(a), replies: (a, b) => b.replies - a.replies, fresh: (a, b) => new Date(b.at) - new Date(a.at) }[W.sort] || ((a, b) => 0);
   return baseFiltered().sort(by).slice(0, 40);
 }
 
 async function translateVisible() {
   const pot = i => (i.replies * 3 + i.likes) / (i.followers + 100);
-  const need = baseFiltered().filter(i => S.tr[i.id]?.chance == null).sort((a, b) => pot(b) - pot(a)).slice(0, 40);
+  const need = baseFiltered().filter(i => S.tr[i.id]?.mech == null).sort((a, b) => pot(b) - pot(a)).slice(0, 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
   const chunks = []; for (let k = 0; k < need.length; k += 5) chunks.push(need.slice(k, k + 5));
   let done = 0, failed = 0;
@@ -670,6 +670,7 @@ function renderWorld() {
         ${t ? `<span class="pill">${esc(t.topic)}</span>` : ''}</div>
       ${t?.chance != null ? `<div class="row small" style="margin-top:6px;gap:6px">
         <span class="pill ${t.chance >= 8 ? 'ok' : t.chance >= 6 ? '' : 'warn'}" style="font-weight:700">шанс у нас ${t.chance}/10</span>
+        ${t.mech ? `<span class="pill lang" title="механика, из-за которой отвечают">${esc(t.mech)}</span>` : ''}
         <span class="pill" title="понятно без контекста страны">универсально ${t.uni}</span>
         <span class="pill" title="захочется ответить своей историей">захотят ответить ${t.reply}</span>
         <span class="pill" title="свежесть идеи">свежесть ${t.fresh}</span>

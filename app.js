@@ -67,36 +67,71 @@ const CORE_TOPICS = {
 const TOPIC_TAGS = ['психологія', 'стосунки', 'айті', 'робота', 'гроші', 'гумор', 'життя', 'соцмережі', 'штучний інтелект', 'укртредс'];
 const BAIT = ['лайкни', 'постав лайк', 'репост якщо', 'зроби репост', 'підпишись', 'підписуйтесь', 'напиши + ', 'став +', 'згодні?', 'що думаєте?', 'а ви як?', 'хто зі мною', 'взаємн'];
 
+
+const NICHE_TAG = { 'стосунки': 'стосунки', 'психологія': 'психологія', 'робота': 'робота', 'айті': 'айті', 'гроші': 'гроші', 'шІ': 'штучний інтелект', 'соцмережі': 'соцмережі' };
+const TAG_NICHE = { 'стосунки': 'стосунки', 'психологія': 'психологія', 'робота': 'робота', 'айті': 'айті', 'гроші': 'гроші', 'штучний інтелект': 'шІ', 'соцмережі': 'соцмережі' };
+function nicheWords(tag) {
+  const k = TAG_NICHE[tag];
+  const words = { 'стосунки': 'стосунки, хлопець, подруга, колишній, побачення', 'психологія': 'психолог, терапія, тривога, кордони, самооцінка', 'робота': 'робота, колега, керівник, дедлайн, мітинг', 'айті': 'айті, мітинг, спринт, дзвінок, стендап', 'гроші': 'гроші, зарплата, податкова, курс, гривні', 'шІ': 'ШІ, штучний інтелект, chatgpt, нейромережа', 'соцмережі': 'тредс, підписники, лайк, пост, інстаграм' };
+  return k ? words[k] : 'стосунки, робота, колега, психолог, гроші, ШІ, тредс';
+}
+function autoTag(text) {
+  const low = text.toLowerCase();
+  const hit = Object.entries(CORE_TOPICS).find(([, ws]) => ws.some(w => low.includes(w)));
+  return hit ? NICHE_TAG[hit[0]] : 'гумор';
+}
+function localFix(t) {
+  return t.replace(/[‐-―−]/g, '-').replace(/[«»“”„]/g, '"').replace(/https?:\/\/\S+/g, '').replace(/(^|\s)#[\p{L}\p{N}_]+/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
+// доводит текст до 100 по проверкам: локальные правки + до 3 раундов точечных правок ИИ
+async function polishTo100(text, tag, original, onStep) {
+  let cur = localFix(text), t = tag || autoTag(cur);
+  for (let round = 0; round < 3; round++) {
+    const r = analyzePost(cur, t, null, { ignore: original });
+    if (r.score >= 100) return { text: cur, tag: t, score: 100, fails: [] };
+    const fixes = r.checks.filter(c => !c.ok && c.fix && !['tag', 'cadence'].includes(c.id)).map(c => c.fix);
+    if (!fixes.length) return { text: cur, tag: t, score: r.score, fails: r.checks.filter(c => !c.ok) };
+    onStep?.(round + 1);
+    try {
+      const out = await api('/improve', { method: 'POST', body: { text: cur, tag: t, fix: fixes } });
+      if (out.variants?.[0]?.text) cur = localFix(out.variants[0].text);
+    } catch { break; }
+    if (!tag) t = autoTag(cur);
+  }
+  const r = analyzePost(cur, t, null, { ignore: original });
+  return { text: cur, tag: t, score: r.score, fails: r.checks.filter(c => !c.ok) };
+}
+
 function tokens(t) { return new Set(String(t).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(w => w.length > 3)); }
 function jaccard(a, b) { let i = 0; for (const x of a) if (b.has(x)) i++; return i / (a.size + b.size - i || 1); }
 
-function analyzePost(text, tag, whenMs) {
+function analyzePost(text, tag, whenMs, opts = {}) {
   const t = text.trim(), low = t.toLowerCase();
   const lines = t.split('\n').filter(Boolean);
   const first = lines[0] || '';
   const len = [...t].length;
   const checks = [];
-  const add = (ok, title, hint, w = 10) => checks.push({ ok, title, hint, w });
+  const add = (ok, title, hint, w = 10, id = '', fix = '') => checks.push({ ok, title, hint, w, id, fix });
 
-  add(len > 0 && len <= 500, len > 500 ? `Длина ${len}/500 — API не примет` : `Длина ${len} симв.`, 'Лимит Threads — 500 символов', 15);
-  add(len > 0 && len <= 280, 'Коротко и плотно (до 280)', 'Короткие тексты дочитывают до конца — меньше «скролла мимо», это сигнал ранжирования', 8);
-  add(first.length > 0 && first.length <= 100, 'Первая строка — крючок (до 100 симв.)', 'В ленте видно начало — в нём должна быть ситуация или поворот, а не разгон', 12);
+  add(len > 0 && len <= 500, len > 500 ? `Длина ${len}/500 — API не примет` : `Длина ${len} симв.`, 'Лимит Threads — 500 символов', 15, 'len500', 'скороти текст до 280 символів');
+  add(len > 0 && len <= 280, 'Коротко и плотно (до 280)', 'Короткие тексты дочитывают до конца — меньше «скролла мимо», это сигнал ранжирования', 8, 'len280', `скороти текст до 270 символів (зараз ${len}), прибери воду, не втрачаючи поворот`);
+  add(first.length > 0 && first.length <= 100, 'Первая строка — крючок (до 100 симв.)', 'В ленте видно начало — в нём должна быть ситуация или поворот, а не разгон', 12, 'hook', `перший рядок має бути гачком до 90 символів (зараз ${first.length}): одразу ситуація або теза, потім перенос рядка`);
   const endsQ = /\?\s*$/.test(t) || /(несіть свої|кидайте|розкажіть|пишіть|ваші варіанти|у коментар|в коментар)/i.test(low);
-  add(endsQ, 'Есть конкретное приглашение ответить', 'Алгоритм предсказывает «нажмёт ли ответить» — вопрос, на который есть что рассказать из жизни, работает лучше лайк-приманок', 15);
+  add(endsQ, 'Есть конкретное приглашение ответить', 'Алгоритм предсказывает «нажмёт ли ответить» — вопрос, на который есть что рассказать из жизни, работает лучше лайк-приманок', 15, 'invite', 'останній рядок - конкретне запрошення відповісти: питання, на яке хочеться розповісти свою історію, що закінчується знаком "?" (не "що думаєте?", не "а ви як?", не "згодні?")');
   const bait = BAIT.find(b => low.includes(b));
-  add(!bait, bait ? `Шаблонная приманка: «${bait}»` : 'Без шаблонных приманок', 'Meta понижает engagement-bait; спроси что-то конкретное вместо «що думаєте?»', 10);
-  add(!!tag, tag ? `Тема: ${tag}` : 'Не выбрана тема (topic tag)', 'Одна тема на пост помещает его в ленту темы и помогает рекомендациям понять, кому тебя показывать', 12);
-  add(!/#\S/.test(t), 'Без хештегов в тексте', 'В Threads работает одна тема поста, а не россыпь #хештегов', 5);
-  add(!/https?:\/\//.test(t), 'Без внешних ссылок', 'Ссылки уводят из приложения; лучше ссылку в первом своём ответе', 5);
-  add(!/[—«»“”]/.test(t), 'Твой стиль: «-» и прямые кавычки', 'Длинное тире и «ёлочки» выдают ИИ-текст', 5);
+  add(!bait, bait ? `Шаблонная приманка: «${bait}»` : 'Без шаблонных приманок', 'Meta понижает engagement-bait; спроси что-то конкретное вместо «що думаєте?»', 10, 'bait', `прибери шаблонну фразу "${bait}" і заміни конкретним питанням`);
+  add(!!tag, tag ? `Тема: ${tag}` : 'Не выбрана тема (topic tag)', 'Одна тема на пост помещает его в ленту темы и помогает рекомендациям понять, кому тебя показывать', 12, 'tag');
+  add(!/#\S/.test(t), 'Без хештегов в тексте', 'В Threads работает одна тема поста, а не россыпь #хештегов', 5, 'hashtag', 'прибери хештеги');
+  add(!/https?:\/\//.test(t), 'Без внешних ссылок', 'Ссылки уводят из приложения; лучше ссылку в первом своём ответе', 5, 'link', 'прибери посилання');
+  add(!/[—«»“”]/.test(t), 'Твой стиль: «-» и прямые кавычки', 'Длинное тире и «ёлочки» выдают ИИ-текст', 5, 'style', 'тільки дефіс "-" і прямі лапки');
   const hits = Object.entries(CORE_TOPICS).filter(([, ws]) => ws.some(w => low.includes(w))).map(([k]) => k);
-  add(hits.length > 0, hits.length ? `В твоей нише: ${hits.join(', ')}` : 'Тема вне твоей ниши', 'Рекомендации учат, кому тебя показывать, по повторяющимся темам — держи 3-4 постоянные', 8);
+  add(hits.length > 0, hits.length ? `В твоей нише: ${hits.join(', ')}` : 'Тема вне твоей ниши', 'Рекомендации учат, кому тебя показывать, по повторяющимся темам — держи 3-4 постоянные', 8, 'niche', `природно впиши хоча б одне з цих слів: ${nicheWords(tag)}`);
   const tk = tokens(t);
-  const sim = rootPosts().slice(0, 15).map(p => ({ p, s: jaccard(tk, tokens(p.text || '')) })).sort((a, b) => b.s - a.s)[0];
-  add(!sim || sim.s < 0.3, sim && sim.s >= 0.3 ? 'Похоже на недавний пост' : 'Не повторяет недавние посты', 'Оригинальность и свежесть — прямые приоритеты ранжирования', 8);
+  const sim = rootPosts().slice(0, 15).filter(p => !opts.ignore || jaccard(tokens(opts.ignore), tokens(p.text || '')) < 0.6).map(p => ({ p, s: jaccard(tk, tokens(p.text || '')) })).sort((a, b) => b.s - a.s)[0];
+  add(!sim || sim.s < 0.3, sim && sim.s >= 0.3 ? 'Похоже на недавний пост' : 'Не повторяет недавние посты', 'Оригинальность и свежесть — прямые приоритеты ранжирования', 8, 'similar', sim ? `переформулюй, щоб текст суттєво відрізнявся від мого поста: "${(sim.p.text || '').slice(0, 200)}"` : '');
   if (whenMs) {
     const last24 = rootPosts().filter(p => Math.abs(new Date(p.timestamp) - whenMs) < 864e5).length + S.queue.filter(q => q.status === 'scheduled' && Math.abs(new Date(q.at) - whenMs) < 864e5).length;
-    add(last24 < 4, `Постов в эти сутки: ${last24}`, 'Больше 3-4 в сутки — посты конкурируют друг с другом за тех же подписчиков', 5);
+    add(last24 < 4, `Постов в эти сутки: ${last24}`, 'Больше 3-4 в сутки — посты конкурируют друг с другом за тех же подписчиков', 5, 'cadence');
   }
   const total = checks.reduce((a, c) => a + c.w, 0);
   const score = Math.round(checks.reduce((a, c) => a + (c.ok ? c.w : 0), 0) / total * 100);
@@ -432,7 +467,7 @@ function renderStudio() {
         <p class="mut small">Пост уходит в Threads только по твоей кнопке. Запланированные публикует Worker в облаке — ноутбук можно закрыть.</p>
       </div>
       <div class="grid">
-        <div class="card"><div class="row"><div><div class="mut small">Готовность для алгоритма</div><div class="score" id="score">—</div></div><span class="sp"></span></div>
+        <div class="card"><div class="row"><div><div class="mut small">Готовность для алгоритма</div><div class="score" id="score">—</div></div><span class="sp"></span><button class="acc sm" id="to100">Довести до 100</button></div>
           <div class="bar"><i id="scorebar" style="width:0"></i></div><ul class="check" id="checks" style="margin-top:12px"></ul></div>
         <div class="card"><h3>Лучшее время (Киев)</h3><div class="grid" id="slots"></div></div>
       </div>
@@ -463,11 +498,23 @@ function renderStudio() {
     const b = $('#impBtn'); b.disabled = true; b.textContent = 'Улучшаю…'; $('#impOut').innerHTML = '';
     try {
       const r = await api('/improve', { method: 'POST', body: { text, tag: tg.value.trim(), hint: $('#ihint').value.trim() } });
-      $('#impOut').innerHTML = r.variants.map((v, k) => { const sc = analyzePost(v.text, tg.value.trim(), null).score; return `<div class="variant"><div style="flex:1"><textarea>${esc(v.text)}</textarea><div class="small mut">${esc(v.note)} · <span class="pill ${sc >= 80 ? 'ok' : ''}">алгоритм ${sc}</span></div></div><div class="acts"><button class="sm" data-use="${k}">Взять</button><button class="ghost sm" data-dr="${k}">В черновики</button></div></div>`; }).join('');
-      $('#impOut').querySelectorAll('[data-use]').forEach(x => x.onclick = () => { const v = x.closest('.variant').querySelector('textarea').value.trim(); feedback(text, 'no', ['улучшенная версия лучше']); feedback(v, 'ok', []); ta.value = v; update(); $('#impOut').innerHTML = ''; toast('Текст заменён ✓'); });
-      $('#impOut').querySelectorAll('[data-dr]').forEach(x => x.onclick = () => { addDraft(x.closest('.variant').querySelector('textarea').value.trim(), tg.value.trim()); x.disabled = true; });
+      b.textContent = 'Довожу до 100…';
+      const res = await Promise.all(r.variants.map(v => polishTo100(v.text, tg.value.trim(), text, n => { b.textContent = `Довожу до 100… (правка ${n})`; }).then(p => ({ ...p, note: v.note }))));
+      res.sort((x, y) => y.score - x.score);
+      $('#impOut').innerHTML = res.map((v, k) => `<div class="variant"><div style="flex:1"><textarea>${esc(v.text)}</textarea><div class="small mut">${esc(v.note)} · <span class="pill ${v.score >= 100 ? 'ok' : 'warn'}">алгоритм ${v.score}</span> <span class="pill">тема: ${esc(v.tag)}</span>${v.fails.length ? ` <span class="small" style="color:var(--warn)">не дотянуто: ${esc(v.fails.map(f => f.title).join('; '))}</span>` : ''}</div></div><div class="acts"><button class="sm" data-use="${k}">Взять</button><button class="ghost sm" data-dr="${k}">В черновики</button></div></div>`).join('');
+      $('#impOut').querySelectorAll('[data-use]').forEach(x => x.onclick = () => { const v = x.closest('.variant').querySelector('textarea').value.trim(); const tagv = res[+x.dataset.use].tag; feedback(text, 'no', ['улучшенная версия лучше']); feedback(v, 'ok', []); ta.value = v; if (!tg.value.trim()) tg.value = tagv; update(); $('#impOut').innerHTML = ''; toast('Текст заменён ✓'); });
+      $('#impOut').querySelectorAll('[data-dr]').forEach(x => x.onclick = () => { addDraft(x.closest('.variant').querySelector('textarea').value.trim(), res[+x.dataset.dr].tag); x.disabled = true; });
     } catch (e) { $('#impOut').innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
     finally { b.disabled = false; b.textContent = '✨ Ещё варианты'; }
+  };
+  $('#to100').onclick = async () => {
+    const text = ta.value.trim(); if (!text) return toast('Сначала напиши текст');
+    const b = $('#to100'); b.disabled = true; b.textContent = 'Довожу…';
+    try {
+      const p = await polishTo100(text, tg.value.trim(), null, n => { b.textContent = `Правка ${n}…`; });
+      ta.value = p.text; if (!tg.value.trim()) tg.value = p.tag; update();
+      toast(p.score >= 100 ? 'Готово: 100 по тексту ✓' : `Дотянула до ${p.score}: ${p.fails.map(f => f.title).join('; ')}`, 6000);
+    } finally { b.disabled = false; b.textContent = 'Довести до 100'; }
   };
   $('#impAsk').onclick = () => { const t = ta.value.trim(); if (!t) return toast('Сначала напиши текст'); askAI(`Улучши этот мой черновик для алгоритма Threads (скилл threads-posts). Сохрани мою мысль и голос, дай 3 варианта: минимальная правка, сильнее поворот, смелее.${$('#ihint').value.trim() ? '\nЧто хочу изменить: ' + $('#ihint').value.trim() : ''}\n\n"${t}"`); };
   window.__loadEditor = (text, tag) => { ta.value = text; tg.value = tag || ''; update(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); };

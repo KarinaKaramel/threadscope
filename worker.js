@@ -246,7 +246,7 @@ function aiText(r) {
   if (Array.isArray(r.content)) return r.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
   if (typeof r.response === 'string') return r.response;
   if (r.response && typeof r.response === 'object') return JSON.stringify(r.response);
-  if (r.choices?.[0]?.message?.content) return r.choices[0].message.content;
+  if (Array.isArray(r.choices)) return r.choices[0]?.message?.content || '';
   if (Array.isArray(r.output)) return r.output.flatMap(o => (o.content || []).map(c => c.text || '')).join('\n');
   if (r.result) return aiText(r.result);
   return JSON.stringify(r);
@@ -298,12 +298,12 @@ async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) 
   }
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   const models = [
-    ['@cf/openai/gpt-oss-120b', { messages, max_tokens: maxTokens, reasoning: { effort: 'low' } }],
+    ['@cf/openai/gpt-oss-120b', { messages, max_tokens: Math.max(maxTokens, 4000), reasoning: { effort: 'low' } }],
     ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', { messages, max_tokens: Math.min(maxTokens, 2000), temperature: 0.7 }],
   ];
   let lastErr;
   for (const [m, input] of models) {
-    try { const t = aiText(await env.AI.run(m, input)); if (t) return { text: t, model: m }; } catch (e) { lastErr = e; }
+    try { const t = aiText(await env.AI.run(m, input)); if (t && t.trim()) return { text: t, model: m }; lastErr = new Error('Пустой ответ модели'); } catch (e) { lastErr = e; }
   }
   throw lastErr || new Error('ИИ недоступен');
 }

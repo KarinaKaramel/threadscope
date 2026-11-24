@@ -640,13 +640,14 @@ async function translateVisible() {
   const pot = i => (i.replies * 3 + i.likes) / (i.followers + 100);
   const need = baseFiltered().filter(i => S.tr[i.id]?.mech == null).sort((a, b) => pot(b) - pot(a)).slice(0, 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
-  const chunks = []; for (let k = 0; k < need.length; k += 5) chunks.push(need.slice(k, k + 5));
+  const per = S.me?.ai?.provider === 'claude' ? 5 : 2;
+  const chunks = []; for (let k = 0; k < need.length; k += per) chunks.push(need.slice(k, k + per));
   let done = 0, failed = 0;
   const st = () => { if ($('#wstat')) $('#wstat').textContent = `Перевожу: ${done} из ${need.length}…`; };
   st();
   const run = async ch => {
     try {
-      const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 60000);
+      const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 150000);
       const res = await fetch(S.worker.replace(/\/$/, '') + '/translate', { method: 'POST', signal: ctrl.signal, headers: { 'Content-Type': 'application/json', 'X-Key': S.key }, body: JSON.stringify({ items: ch.map(i => ({ id: i.id, text: i.text, likes: i.likes, replies: i.replies, media: i.media })) }) });
       clearTimeout(to);
       const r = await res.json(); if (r.error) throw new Error(r.error);
@@ -655,7 +656,7 @@ async function translateVisible() {
     } catch { failed++; }
     done += ch.length; st(); renderWorld();
   };
-  for (let k = 0; k < chunks.length; k += 3) await Promise.all(chunks.slice(k, k + 3).map(run));
+  let next = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (next < chunks.length) await run(chunks[next++]); }));
   if ($('#wstat')) $('#wstat').textContent = failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
 }
 function renderWorld() {

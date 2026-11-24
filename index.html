@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Threadscope</title>
+<meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f5f2" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Threadscope">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">@</span><div><b>Threadscope</b><small id="who">не подключено</small></div></div>
+  <button class="ghost" id="refreshBtn" title="Обновить данные">↻ Обновить</button>
+</header>
+<nav class="tabs" id="tabs">
+  <a href="#overview" data-tab="overview">Обзор</a>
+  <a href="#posts" data-tab="posts">Публикации</a>
+  <a href="#studio" data-tab="studio">Студия</a>
+  <a href="#trends" data-tab="trends">Тренды</a>
+  <a href="#connect" data-tab="connect">Подключение</a>
+</nav>
+<main>
+  <section id="overview" class="view"></section>
+  <section id="posts" class="view"></section>
+  <section id="studio" class="view"></section>
+  <section id="trends" class="view"></section>
+  <section id="connect" class="view"></section>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js?v=1"></script>
+</body>
+</html>

@@ -213,6 +213,8 @@ function recommendations() {
   if (tagged < ps.length) out.push({ t: `Тема указана в ${tagged} из ${ps.length} постов`, d: 'Ставь одну тему на каждый пост (в Студии это поле «Тема») — так пост попадает в ленту темы.' });
   const rr = ps.reduce((a, p) => a + m(p).replies, 0);
   out.push({ t: 'Ответы — твой второй канал роста', d: `Отвечать на посты больших аккаунтов в своей нише так же полезно, как постить. Цель: 10-15 содержательных ответов в день, особенно в первый час после их публикации. Сейчас под твоими постами ${rr} ответов — отвечай каждому в первый час, это продлевает жизнь поста.` });
+  if (S.perf?.ready) out.push({ t: `ИИ учится на твоей статистике: ${S.perf.wins.length} залетело, ${S.perf.flops.length} не зашло`, d: 'Генератор, улучшатель, ответы и отбор трендов берут залетевшие посты за образец и избегают механик провалившихся. Подробнее — Студия → «Чему ИИ научился».' });
+  else out.push({ t: 'Скоро ИИ начнёт учиться на твоих результатах', d: `Нужно 4 поста старше 48 часов с 20+ просмотрами (сейчас ${S.perf?.count ?? 0}). Тогда залетевшие станут образцом, а провальные — анти-примером.` });
   const slots = bestSlots(2);
   if (slots.length) out.push({ t: 'Ближайшие хорошие окна', d: slots.map(s => kyiv(s.t, { weekday: 'short', hour: '2-digit', minute: '2-digit' })).join(' · ') + ' (по Киеву).' });
   return out;
@@ -356,6 +358,7 @@ const GPT = cls => `<button class="${cls || 'ghost sm'}" data-gpt>в ChatGPT</bu
 
 // ---------- Генератор черновиков + обучение ----------
 S.gen = LS.get('gen', []);
+S.perf = LS.get('perf', null);
 const REASONS = ['банально', 'не смешно', 'не мой стиль', 'слишком длинно', 'искусственный вопрос', 'суржик/кривой язык', 'уже было', 'не моя тема'];
 function genHtml() {
   return `<div class="card" style="margin-bottom:12px">
@@ -435,11 +438,22 @@ function renderGenList() {
   });
 }
 function feedback(text, verdict, reasons, kind = 'post') { api('/feedback', { method: 'POST', body: { text, verdict, reasons, kind } }).catch(() => {}); }
+function perfHtml() {
+  const pf = S.perf;
+  if (!pf) return '';
+  if (!pf.ready) return `<p class="mut">Обучение на статистике начнётся, когда наберётся 4 поста старше 48 часов с 20+ просмотрами (сейчас ${pf.count || 0}).</p>`;
+  const row = p => `<div style="margin:3px 0"><span class="pill">${pct(p.er)}</span> ${esc(p.text.replace(/\n/g, ' / ').slice(0, 110))}</div>`;
+  return `<b>Чему научила твоя статистика</b> <span class="mut">(${pf.count} постов, медиана ER ${pct(pf.median.er)})</span>
+    <div style="margin:6px 0"><span class="up">▲ Залетело — ИИ берёт за образец:</span>${pf.wins.length ? pf.wins.map(row).join('') : '<div class="mut">пока нет явных лидеров</div>'}</div>
+    <div style="margin:6px 0 12px"><span class="down">▼ Не зашло — ИИ избегает:</span>${pf.flops.length ? pf.flops.map(row).join('') : '<div class="mut">явных провалов нет</div>'}</div>`;
+}
 async function loadLearn() {
   const box = $('#learnBody');
   try {
     const p = await api('/prefs');
+    try { S.perf = await api('/perf'); LS.set('perf', S.perf); } catch {}
     box.innerHTML = `<p class="mut">Оценок: 👍 ${p.liked} · 👎 ${p.disliked}${p.learnedAt ? ' · правила обновлены ' + kyiv(p.learnedAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</p>
+      ${perfHtml()}
       <b>Правила, которые ИИ вывел сам</b><div style="white-space:pre-wrap;margin:4px 0 10px">${esc(p.notes || 'Пока мало оценок — нужно хотя бы 4.')}</div>
       <label>Твои правила для ИИ (важнее всего остального)</label><textarea id="manualRules" style="min-height:90px" placeholder="например: не шутить про свекровь; больше про IT; никаких «а ви як?»">${esc(p.manual || '')}</textarea>
       <div class="row" style="margin-top:8px"><button class="sm" id="saveRules">Сохранить правила</button><button class="ghost sm" id="relearn">Переобучить сейчас</button></div>`;
@@ -1027,6 +1041,7 @@ async function syncAll() {
     try { S.history = await api('/history'); LS.set('history', S.history); } catch {}
     try { S.queue = await api('/queue'); } catch {}
     try { await loadInbox(); } catch {}
+    try { S.perf = await api('/perf', { method: 'POST', body: { posts: rootPosts().map(p => ({ id: p.id, text: p.text, timestamp: p.timestamp, topic_tag: p.topic_tag, metrics: p.metrics })) } }); LS.set('perf', S.perf); } catch {}
     LS.set('syncedAt', Date.now());
   } finally { btn.disabled = false; btn.textContent = '↻ Обновить'; renderAll(); }
 }

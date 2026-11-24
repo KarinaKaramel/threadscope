@@ -163,6 +163,7 @@ async function dailySnapshot(env) {
   try {
     const { posts } = await fetchPosts(cfg, 40);
     snap.posts = posts.map(p => ({ id: p.id, ...(p.metrics || {}) }));
+    await savePerf(env, posts);
   } catch {}
   await env.TS.put('snap:' + day, JSON.stringify(snap));
 }
@@ -331,6 +332,51 @@ function prefsBlock(p, kind) {
   if (D.length) s += `\nПриклади, які вона ВІДХИЛИЛА (не повторюй такого):\n${D.map(x => '- ' + x.text.replace(/\n/g, ' / ') + (x.reasons?.length ? ` [причина: ${x.reasons.join(', ')}]` : '')).join('\n')}\n`;
   return s;
 }
+
+// ---------- обучение на реальных результатах постов ----------
+function computePerf(posts) {
+  const now = Date.now();
+  const ps = (posts || []).filter(p => p.text && p.metrics && now - new Date(p.timestamp) > 48 * 3600e3 && now - new Date(p.timestamp) < 90 * 864e5 && (p.metrics.views || 0) >= 20)
+    .map(p => { const m = p.metrics; const eng = (m.likes || 0) + (m.replies || 0) + (m.reposts || 0) + (m.quotes || 0) + (m.shares || 0); return { id: p.id, text: p.text, topic_tag: p.topic_tag || '', at: p.timestamp, views: m.views || 0, replies: m.replies || 0, likes: m.likes || 0, er: (m.views ? eng / m.views : 0) }; });
+  if (ps.length < 4) return { ready: false, count: ps.length, wins: [], flops: [], updatedAt: new Date().toISOString() };
+  const med = a => { const s = [...a].sort((x, y) => x - y); const i = s.length >> 1; return s.length % 2 ? s[i] : (s[i - 1] + s[i]) / 2; };
+  const mEr = med(ps.map(p => p.er)), mRep = med(ps.map(p => p.replies)), mViews = med(ps.map(p => p.views));
+  const wins = ps.filter(p => p.er >= Math.max(mEr * 1.4, 0.01) && p.replies >= Math.max(1, mRep)).sort((a, b) => b.er - a.er).slice(0, 8);
+  const flops = ps.filter(p => !wins.includes(p) && p.views >= 30 && (p.er <= mEr * 0.6 || (p.er === 0 && mEr > 0))).sort((a, b) => a.er - b.er).slice(0, 8);
+  return { ready: true, count: ps.length, median: { er: mEr, replies: mRep, views: mViews }, wins, flops, updatedAt: new Date().toISOString() };
+}
+async function savePerf(env, posts) {
+  const perf = computePerf(posts);
+  await env.TS.put('perf', JSON.stringify(perf));
+  if (perf.ready) {
+    // реальные результаты сильнее «👍 за публикацию»: залетевшие — в понравившиеся, провалы — в отклонённые
+    const p = await getPrefs(env);
+    const pct = x => (x * 100).toFixed(1) + '%';
+    for (const f of perf.flops) {
+      p.liked = p.liked.filter(x => x.text !== f.text);
+      if (!p.disliked.some(x => x.text === f.text)) p.disliked.push({ text: f.text, kind: 'post', reasons: [`не зайшло підписникам: ER ${pct(f.er)} при медіані ${pct(perf.median.er)}`], at: new Date().toISOString(), perf: true });
+    }
+    for (const wi of perf.wins) {
+      p.disliked = p.disliked.filter(x => x.text !== wi.text);
+      if (!p.liked.some(x => x.text === wi.text)) p.liked.push({ text: wi.text, kind: 'post', at: new Date().toISOString(), perf: true });
+    }
+    p.liked = p.liked.slice(-80); p.disliked = p.disliked.slice(-80);
+    await putPrefs(env, p);
+  }
+  return perf;
+}
+async function getPerf(env) { return (await env.TS.get('perf', 'json')) || null; }
+function perfBlock(perf, short = false) {
+  if (!perf?.ready) return '';
+  const pct = x => (x * 100).toFixed(1) + '%';
+  const line = p => `"${p.text.replace(/\n/g, ' / ').slice(0, 220)}" (ER ${pct(p.er)}, відповідей ${p.replies}, переглядів ${p.views}${p.topic_tag ? ', тема ' + p.topic_tag : ''})`;
+  const W = perf.wins.slice(0, short ? 3 : 6), F = perf.flops.slice(0, short ? 2 : 5);
+  let s = `\nРЕАЛЬНА СТАТИСТИКА її постів (медіана ER ${pct(perf.median.er)}, медіана відповідей ${perf.median.replies}):\n`;
+  if (W.length) s += `ЗАЛЕТІЛО (бери ці механіки, тон і теми за орієнтир):\n${W.map(p => '+ ' + line(p)).join('\n')}\n`;
+  if (F.length) s += `НЕ ЗАЙШЛО (уникай таких механік і подачі):\n${F.map(p => '- ' + line(p)).join('\n')}\n`;
+  return s;
+}
+
 async function learn(env) {
   const p = await getPrefs(env);
   if (p.liked.length + p.disliked.length < 4) return p;
@@ -349,15 +395,15 @@ async function learn(env) {
 
 // ---------- генерация ----------
 async function suggest(env, { post, comment, chain = [], hint = '' }) {
-  const p = await getPrefs(env);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), true);
   const ctx = [`Пост Карини: "${post}"`, ...chain.map(c => `${c.mine ? 'Карина' : '@' + c.username}: "${c.text}"`), `Коментар, на який треба відповісти: "${comment}"`].join('\n');
   const user = `${ctx}\n${hint ? 'Побажання Карини: ' + hint + '\n' : ''}\nНапиши 3 різні варіанти відповіді: 1) продовжити жарт/думку з власним поворотом, 2) по-людськи тепло або з нюансом, 3) з конкретним питанням, на яке хочеться відповісти. Поверни ТІЛЬКИ JSON-масив з 3 рядків.`;
-  const { arr, model } = await aiJson(env, REPLY_STYLE + prefsBlock(p, 'reply'), user, { maxTokens: 2000 });
+  const { arr, model } = await aiJson(env, REPLY_STYLE + prefsBlock(p, 'reply') + perfTxt, user, { maxTokens: 2000 });
   return { model, variants: arr.map(strOf).filter(Boolean).slice(0, 3) };
 }
 
 async function generate(env, { count = 10, topic = '', hint = '', best = [], recent = [] }) {
-  const p = await getPrefs(env);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false);
   count = Math.max(3, Math.min(+count || 10, 15));
   const user = `${best.length ? 'Її пости з найкращою статистикою (на них орієнтуйся):\n' + best.map(b => `* "${b.text}" (перегляди ${b.views}, відповіді ${b.replies}, ER ${b.er})`).join('\n') + '\n' : ''}${recent.length ? 'Недавні пости (НЕ повторюй ці ідеї і механіки):\n' + recent.map(r => '* ' + r).join('\n') + '\n' : ''}
 Сьогодні ${new Date().toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv', weekday: 'long', day: 'numeric', month: 'long' })} - якщо доречно, прив'яжи частину ідей до сезону, дня тижня чи актуальних буденних подій.
@@ -365,13 +411,13 @@ ${topic ? 'Тема: ' + topic + '\n' : 'Теми різні, з її ніш.\n'
 Напиши ${count} РІЗНИХ чернеток постів (різні механіки: колекція/музей, рейтинг, словник-переклад, спірна теза з нюансом, мікроісторія з поворотом, порівняння). Для кожної поверни об'єкт:
 {"text": пост до 280 символів, "topic_tag": одна тема з [психологія, стосунки, айті, робота, гроші, гумор, життя, соцмережі, штучний інтелект], "why": одне коротке речення чому люди захочуть відповісти, "score": твій прогноз 1-10 наскільки зайде}
 Поверни ТІЛЬКИ JSON-масив.`;
-  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 5000 });
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post') + perfTxt, user, { maxTokens: 5000 });
   return { model, drafts: arr.filter(x => x && (x.text || typeof x === 'string')).map(x => ({ text: strOf(x.text ?? x), topic_tag: fixTypo(x.topic_tag || ''), why: fixTypo(x.why || ''), score: +x.score || null })).slice(0, count) };
 }
 
 
 async function improve(env, { text, hint = '', tag = '', fix = null }) {
-  const p = await getPrefs(env);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false);
   if (Array.isArray(fix) && fix.length) {
     const user = `Ось пост Карини:\n"${text}"\n${tag ? 'Тема: ' + tag + '\n' : ''}
 Внеси ТІЛЬКИ ці правки, усе інше (думку, голос, жарт, поворот) збережи:\n${fix.map(f => '- ' + f).join('\n')}
@@ -379,7 +425,7 @@ async function improve(env, { text, hint = '', tag = '', fix = null }) {
 Поверни ТІЛЬКИ JSON-масив з 1 об'єкта {"text": виправлений пост}.`;
     let lastRaw = '', model = '';
     for (let i = 0; i < 2; i++) {
-      const r = await ai(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2000 });
+      const r = await ai(env, BASE_STYLE + prefsBlock(p, 'post') + perfTxt, user, { maxTokens: 2000 });
       model = r.model; lastRaw = r.text || '';
       const arr = extractJson(lastRaw);
       let t = '';
@@ -395,7 +441,7 @@ async function improve(env, { text, hint = '', tag = '', fix = null }) {
 Покращ її для алгоритму Threads, зберігши її голос і головну думку (не підміняй ідею своєю). Що можна робити: сильніший гачок у першому рядку, коротше і щільніше, точніша деталь, різкіший поворот у кінці, конкретний привід відповісти (без штучних питань), прибрати воду, канцелярит, суржик, довгі тире.
 Дай 3 різні варіанти: 1) мінімальна правка, 2) сильніший поворот, 3) сміливіша версія.
 Поверни ТІЛЬКИ JSON-масив з 3 об'єктів {"text": покращений пост до 280 символів, "note": що змінено, коротко російською}.`;
-  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2500 });
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post') + perfTxt, user, { maxTokens: 2500 });
   return { model, variants: arr.map(x => ({ text: strOf(x.text ?? x), note: fixTypo(x.note || '') })).filter(v => v.text).slice(0, 3) };
 }
 
@@ -410,7 +456,9 @@ async function translate(env, items) {
 - 3-5: просто мило/смішно, але відповідати нема чого;
 - 0-2: особистий щоденник ("доброго ранку, ось мій сніданок/прибирання/мій кіт"), фото-пости, новини, знаменитості, реклама, фандоми - таке залітає лише в автора з власною аудиторією.
 Типографіка: тільки дефіс "-" і прямі лапки. Без суржику і русизмів.`;
-  const user = `Для кожного поста поверни об'єкт:
+  const perf = await getPerf(env);
+  const mine = perf?.ready ? `\nЩо реально працює в її акаунті (оцінюючи "fit", порівнюй з цим): ${perf.wins.slice(0, 4).map(p => '"' + p.text.replace(/\n/g, ' / ').slice(0, 140) + '"').join('; ')}${perf.flops.length ? `. Не заходить: ${perf.flops.slice(0, 3).map(p => '"' + p.text.replace(/\n/g, ' / ').slice(0, 100) + '"').join('; ')}` : ''}\n` : '';
+  const user = mine + `Для кожного поста поверни об'єкт:
 {"id", "lang": ISO-код мови оригіналу,
  "uk": точний переклад українською,
  "ua": переписаний "по-нашому" пост для українського Threads - та сама механіка, але звучить так, ніби його написала українка: розмовно, з малої літери, до 280 символів, з поворотом; універсально і цікаво, НЕ перевантажуй локальними брендами - українські реалії тільки якщо вони підсилюють жарт,
@@ -431,11 +479,11 @@ ${JSON.stringify(list)}`;
 }
 
 async function adapt(env, { text, hint = '' }) {
-  const p = await getPrefs(env);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false);
   const user = `Ось пост, який залетів в іншій країні:\n"${text}"\n${hint ? 'Побажання: ' + hint + '\n' : ''}
 Не копіюй і не перекладай його дослівно. Зрозумій, ЧОМУ люди на нього реагують (механіка), і напиши 3 оригінальні пости для українського Threads Карини з тією ж механікою, але з українськими реаліями і на її теми. Кожен до 280 символів, з конкретним приводом відповісти.
 Поверни ТІЛЬКИ JSON-масив з 3 рядків.`;
-  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2500 });
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post') + perfTxt, user, { maxTokens: 2500 });
   return { model, variants: arr.map(strOf).filter(Boolean).slice(0, 3) };
 }
 
@@ -521,6 +569,8 @@ export default {
         return json(req, await suggest(env, body));
       }
       if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
+      if (path === '/perf' && req.method === 'POST') return json(req, await savePerf(env, body.posts || []));
+      if (path === '/perf' && req.method === 'GET') return json(req, (await getPerf(env)) || { ready: false });
       if (path === '/generate' && req.method === 'POST') return json(req, await generate(env, body));
       if (path === '/prefs' && req.method === 'GET') { const p = await getPrefs(env); return json(req, { liked: p.liked.length, disliked: p.disliked.length, notes: p.notes, manual: p.manual, learnedAt: p.learnedAt || null }); }
       if (path === '/prefs' && req.method === 'POST') { const p = await getPrefs(env); p.manual = String(body.manual || '').slice(0, 3000); await putPrefs(env, p); return json(req, { ok: true }); }

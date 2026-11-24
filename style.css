@@ -90,3 +90,13 @@ code{background:var(--soft);padding:1px 6px;border-radius:6px;font-size:13px}
 .variant textarea{min-height:64px;font-size:14px}
 .variant .acts{display:flex;flex-direction:column;gap:6px}
 .postHead{font-size:14px;white-space:pre-wrap;padding:10px 12px;background:var(--soft);border-radius:12px}
+
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.flt{margin:0;display:flex;flex-direction:column;gap:3px;font-size:12px}
+.flt select{padding:7px 9px;font-size:13px}
+.chk{margin:0;display:flex;gap:6px;align-items:center;color:var(--ink);font-size:13px}.chk input{width:auto}
+.pill.lang{background:color-mix(in srgb,var(--acc) 14%,var(--soft));color:var(--ink);font-weight:600}
+.ua{margin-top:6px;padding:10px 12px;border-radius:12px;background:color-mix(in srgb,var(--acc2) 8%,var(--soft))}
+.ua .t{font-size:15px}
+.gitem{padding:12px 0;border-bottom:1px solid var(--line)}.gitem:last-child{border:0}
+.gitem textarea{min-height:70px;font-size:15px}

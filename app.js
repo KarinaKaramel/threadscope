@@ -290,11 +290,93 @@ function claudeContext(extra = '') {
     `\n\n${extra || 'Проанализируй, что работает, и предложи 5 новых постов в моём стиле.'}`;
 }
 
+// ---------- Генератор черновиков + обучение ----------
+S.gen = LS.get('gen', []);
+const REASONS = ['банально', 'не смешно', 'не мой стиль', 'слишком длинно', 'искусственный вопрос', 'суржик/кривой язык', 'уже было', 'не моя тема'];
+function genHtml() {
+  return `<div class="card" style="margin-bottom:12px">
+    <div class="row"><h3 style="margin:0">Генератор черновиков</h3><span class="sp"></span><span class="mut small" id="aiProv"></span></div>
+    <div class="row" style="margin-top:10px">
+      <select id="gcount" style="width:auto">${[5, 10, 15].map(n => `<option ${n == LS.get('gcount', 10) ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <select id="gtopic" style="width:auto"><option value="">любые темы</option>${TOPIC_TAGS.map(t => `<option>${t}</option>`).join('')}</select>
+      <input id="ghint" placeholder="пожелание: например «про понедельник», «больше колкости», «про чорну п'ятницю»" style="flex:1;min-width:200px">
+      <button class="acc" id="gbtn">✨ Сгенерировать</button>
+    </div>
+    <p class="mut small" style="margin:8px 0 0">Оценивай: 👍 — в черновики, 👎 — с причиной. ИИ учитывает твои оценки и лучшие посты по статистике, а каждые 8 оценок сам обновляет правила твоего вкуса.</p>
+    <div id="glist" style="margin-top:6px"></div>
+    <details style="margin-top:12px" id="learnBox"><summary>Чему ИИ научился</summary><div id="learnBody" class="small" style="margin-top:8px">Загрузка…</div></details>
+  </div>`;
+}
+function setupGen() {
+  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : 'ИИ: бесплатный Workers AI') : '';
+  $('#gbtn').onclick = genDrafts;
+  $('#gcount').onchange = e => LS.set('gcount', +e.target.value);
+  $('#learnBox').ontoggle = e => e.target.open && loadLearn();
+  renderGenList();
+}
+async function genDrafts() {
+  const b = $('#gbtn'); b.disabled = true; b.textContent = 'Пишу черновики…';
+  const ps = rootPosts().filter(p => p.metrics && m(p).views >= 20);
+  const best = [...ps].sort((a, c) => (m(c).er || 0) - (m(a).er || 0)).slice(0, 5).map(p => ({ text: p.text, views: m(p).views, replies: m(p).replies, er: pct(m(p).er) }));
+  const recent = byDate(rootPosts()).slice(0, 12).map(p => (p.text || '').replace(/\n/g, ' / '));
+  try {
+    const r = await api('/generate', { method: 'POST', body: { count: +$('#gcount').value, topic: $('#gtopic').value, hint: $('#ghint').value.trim(), best, recent } });
+    S.gen = [...r.drafts.map(d => ({ ...d, id: Date.now() + Math.random(), state: 'new' })), ...S.gen.filter(g => g.state === 'new')].slice(0, 40);
+    LS.set('gen', S.gen); renderGenList(); toast(`Готово: ${r.drafts.length} черновиков`);
+  } catch (e) { toast('Генерация: ' + e.message, 6000); }
+  finally { b.disabled = false; b.textContent = '✨ Сгенерировать'; }
+}
+function renderGenList() {
+  const box = $('#glist'); if (!box) return;
+  const list = S.gen.filter(g => g.state === 'new');
+  box.innerHTML = list.length ? list.map(g => {
+    const a = analyzePost(g.text, g.topic_tag, null);
+    return `<div class="gitem" data-g="${g.id}">
+      <textarea class="gtext">${esc(g.text)}</textarea>
+      <div class="row small" style="margin-top:4px">
+        ${g.topic_tag ? `<span class="pill">${esc(g.topic_tag)}</span>` : ''}
+        <span class="pill ${a.score >= 80 ? 'ok' : a.score >= 60 ? '' : 'warn'}" title="${esc(a.checks.filter(c => !c.ok).map(c => c.title).join('; ') || 'все проверки пройдены')}">алгоритм ${a.score}</span>
+        ${g.score ? `<span class="pill" title="прогноз ИИ">прогноз ${g.score}/10</span>` : ''}
+        <span class="mut">${esc(g.why || '')}</span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="sm" data-ok>👍 Ок</button>
+        <button class="ghost sm" data-no>👎 Не ок</button>
+        <button class="ghost sm" data-edit>✏️ В редактор</button>
+      </div>
+      <div class="chips reasons" hidden style="margin-top:6px">${REASONS.map(r => `<span class="chip" data-r="${r}">${r}</span>`).join('')}<span class="chip" data-r="">просто нет</span></div>
+    </div>`;
+  }).join('') : '<p class="mut small">Нажми «Сгенерировать» — появятся черновики для оценки.</p>';
+  box.querySelectorAll('.gitem').forEach(el => {
+    const g = S.gen.find(x => x.id == el.dataset.g);
+    const text = () => el.querySelector('.gtext').value.trim();
+    const done = st => { g.state = st; LS.set('gen', S.gen); el.style.opacity = .35; setTimeout(renderGenList, 250); };
+    el.querySelector('[data-ok]').onclick = () => { addDraft(text(), g.topic_tag); feedback(text(), 'ok', []); done('ok'); };
+    el.querySelector('[data-no]').onclick = () => { el.querySelector('.reasons').hidden = false; };
+    el.querySelectorAll('[data-r]').forEach(c => c.onclick = () => { feedback(text(), 'no', c.dataset.r ? [c.dataset.r] : []); done('no'); });
+    el.querySelector('[data-edit]').onclick = () => { window.__loadEditor?.(text(), g.topic_tag); feedback(text(), 'ok', []); done('ok'); };
+  });
+}
+function feedback(text, verdict, reasons, kind = 'post') { api('/feedback', { method: 'POST', body: { text, verdict, reasons, kind } }).catch(() => {}); }
+async function loadLearn() {
+  const box = $('#learnBody');
+  try {
+    const p = await api('/prefs');
+    box.innerHTML = `<p class="mut">Оценок: 👍 ${p.liked} · 👎 ${p.disliked}${p.learnedAt ? ' · правила обновлены ' + kyiv(p.learnedAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</p>
+      <b>Правила, которые ИИ вывел сам</b><div style="white-space:pre-wrap;margin:4px 0 10px">${esc(p.notes || 'Пока мало оценок — нужно хотя бы 4.')}</div>
+      <label>Твои правила для ИИ (важнее всего остального)</label><textarea id="manualRules" style="min-height:90px" placeholder="например: не шутить про свекровь; больше про IT; никаких «а ви як?»">${esc(p.manual || '')}</textarea>
+      <div class="row" style="margin-top:8px"><button class="sm" id="saveRules">Сохранить правила</button><button class="ghost sm" id="relearn">Переобучить сейчас</button></div>`;
+    $('#saveRules').onclick = async () => { await api('/prefs', { method: 'POST', body: { manual: $('#manualRules').value } }); toast('Сохранено ✓'); };
+    $('#relearn').onclick = async e => { e.target.disabled = true; e.target.textContent = 'Анализирую…'; try { await api('/learn', { method: 'POST' }); await loadLearn(); } catch (err) { toast(err.message); e.target.disabled = false; } };
+  } catch (e) { box.textContent = e.message; }
+}
+
 // ---------- Студия ----------
 function renderStudio() {
   const d = LS.get('draft', { text: '', tag: '' });
   $('#studio').innerHTML = `
     <h2>Студия</h2>
+    ${genHtml()}
     <div class="grid two">
       <div class="card">
         <label for="ptext">Текст поста</label>
@@ -342,6 +424,8 @@ function renderStudio() {
     $('#studio').querySelectorAll('[data-tag]').forEach(c => c.classList.toggle('on', c.dataset.tag === tg.value.trim()));
   }
   ta.oninput = tg.oninput = wh.oninput = update; update();
+  window.__loadEditor = (text, tag) => { ta.value = text; tg.value = tag || ''; update(); ta.scrollIntoView({ behavior: 'smooth', block: 'center' }); ta.focus(); };
+  setupGen();
   const valid = () => {
     const text = ta.value.trim(), tag = tg.value.trim();
     if (!text) return toast('Пустой текст'), null;
@@ -354,14 +438,14 @@ function renderStudio() {
     const at = fromLocalInput(wh.value);
     if (!at || at < Date.now()) return toast('Выбери время в будущем');
     if (!confirm(`Запланировать на ${kyiv(at, { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}?\n\n${p.text}`)) return;
-    try { await api('/queue', { method: 'POST', body: { ...p, at: new Date(at).toISOString() } }); ta.value = ''; update(); toast('Запланировано ✓'); loadQueue(); }
+    try { await api('/queue', { method: 'POST', body: { ...p, at: new Date(at).toISOString() } }); feedback(p.text, 'ok', []); ta.value = ''; update(); toast('Запланировано ✓'); loadQueue(); }
     catch (e) { toast(e.message, 5000); }
   };
   $('#nowBtn').onclick = async () => {
     const p = valid(); if (!p) return;
     if (!confirm('Опубликовать в Threads прямо сейчас?\n\n' + p.text)) return;
     const b = $('#nowBtn'); b.disabled = true; b.textContent = 'Публикую…';
-    try { const r = await api('/publish', { method: 'POST', body: p }); ta.value = ''; update(); toast('Опубликовано ✓'); if (r.permalink) window.open(r.permalink, '_blank'); setTimeout(syncAll, 3000); }
+    try { const r = await api('/publish', { method: 'POST', body: p }); feedback(p.text, 'ok', []); ta.value = ''; update(); toast('Опубликовано ✓'); if (r.permalink) window.open(r.permalink, '_blank'); setTimeout(syncAll, 3000); }
     catch (e) { toast('Ошибка: ' + e.message + ' — проверь профиль, прежде чем жать снова', 7000); }
     finally { b.disabled = false; b.textContent = 'Опубликовать сейчас'; }
   };
@@ -372,6 +456,7 @@ function renderStudio() {
     $('#drafts').querySelectorAll('[data-use]').forEach(a => a.onclick = e => { e.preventDefault(); const d = S.drafts.find(x => x.id == a.dataset.use); ta.value = d.text; tg.value = d.topic_tag || ''; update(); ta.focus(); window.scrollTo({ top: 0, behavior: 'smooth' }); });
     $('#drafts').querySelectorAll('[data-del]').forEach(a => a.onclick = e => { e.preventDefault(); S.drafts = S.drafts.filter(x => x.id != a.dataset.del); LS.set('drafts', S.drafts); renderDrafts(); });
   }
+  window.__renderDrafts = renderDrafts;
   renderDrafts(); loadQueue();
 }
 const toLocalInput = t => { const d = new Date(t); const z = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
@@ -398,16 +483,38 @@ const TREND_PRESETS = {
   'ИИ': ['штучний інтелект', 'chatgpt', 'нейромережа'],
   'Threads': ['укртредс', 'тредс', 'підписники'],
 };
+const WDEF = { bs: true, ms: true, langs: [], topics: [], minLikes: 100, minReplies: 0, minF: 0, maxF: 3000, hours: 72, minFit: 0, media: 'any', sort: 'fit', clean: true };
+const wcfg = () => ({ ...WDEF, ...LS.get('worldCfg2', {}) });
+const LANG_NAMES = { en: '🇬🇧 английский', es: '🇪🇸 испанский', de: '🇩🇪 немецкий', ja: '🇯🇵 японский', fr: '🇫🇷 французский', pt: '🇧🇷 португальский', it: '🇮🇹 итальянский', nl: '🇳🇱 нидерландский', pl: '🇵🇱 польский', ru: '🇷🇺 русский', ko: '🇰🇷 корейский', zh: '🇨🇳 китайский', tr: '🇹🇷 турецкий', sv: '🇸🇪 шведский', fi: '🇫🇮 финский', cs: '🇨🇿 чешский', da: '🇩🇰 датский', no: '🇳🇴 норвежский', nb: '🇳🇴 норвежский', uk: '🇺🇦 украинский', ca: 'каталанский', eu: 'баскский', gl: 'галисийский', el: '🇬🇷 греческий', he: '🇮🇱 иврит', ar: 'арабский', hi: '🇮🇳 хинди', id: '🇮🇩 индонезийский', th: '🇹🇭 тайский', vi: '🇻🇳 вьетнамский', hu: '🇭🇺 венгерский', ro: '🇷🇴 румынский' };
+const langOf = i => ((S.tr[i.id]?.lang || i.lang || '').slice(0, 2).toLowerCase()) || '?';
+const langName = c => LANG_NAMES[c] || (c === '?' ? 'язык не указан' : c);
+const WTOPICS = ['стосунки', 'психологія', 'робота', 'айті', 'гроші', 'гумор', 'життя', 'соцмережі', 'ші', 'інше'];
+
 function renderTrends() {
-  const W = LS.get('worldCfg', { minEng: 200, maxF: 3000, clean: true });
+  const W = wcfg();
+  const num = (id, label, vals, cur) => `<label class="flt"><span>${label}</span><select id="${id}">${vals.map(v => `<option value="${v[0] ?? v}" ${String(v[0] ?? v) === String(cur) ? 'selected' : ''}>${v[1] ?? v}</option>`).join('')}</select></label>`;
   $('#trends').innerHTML = `
-    <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button></div>
-    <p class="mut small" style="margin-top:-6px">Посты обычных людей (не медиа и не звёзд) из Bluesky и Mastodon за последние 3 дня, которые собрали много реакций. Переведены на украинский, отсортированы по тому, насколько механика подходит твоему аккаунту. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях — там те же сюжеты, но до укр. Threads они ещё не дошли.</p>
-    <div class="card"><div class="row small">
-      <span class="mut">реакций от</span><select id="wmin" style="width:auto">${[50, 100, 200, 500, 1000].map(v => `<option ${v == W.minEng ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <span class="mut">подписчиков у автора до</span><select id="wmax" style="width:auto">${[500, 1000, 3000, 10000, 50000].map(v => `<option ${v == W.maxF ? 'selected' : ''}>${v}</option>`).join('')}</select>
-      <label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--ink)"><input type="checkbox" id="wclean" ${W.clean ? 'checked' : ''} style="width:auto"> без политики и новостей</label>
-      <span class="sp"></span><span id="wstat" class="mut"></span></div></div>
+    <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><span id="wstat" class="mut small"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button></div>
+    <p class="mut small" style="margin-top:-6px">Посты обычных людей из Bluesky и Mastodon, которые собрали много реакций. ИИ переводит их и переписывает на украинский лад — с нашими реалиями и в твоём стиле. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях.</p>
+    <div class="card">
+      <div class="fgrid">
+        ${num('f_minLikes', 'лайков от', [0, 50, 100, 200, 500, 1000, 5000], W.minLikes)}
+        ${num('f_minReplies', 'комментов от', [0, 5, 10, 25, 50, 100, 500], W.minReplies)}
+        ${num('f_minF', 'подписчиков от', [0, 50, 100, 500, 1000], W.minF)}
+        ${num('f_maxF', 'подписчиков до', [300, 1000, 3000, 10000, 50000], W.maxF)}
+        ${num('f_hours', 'свежесть', [[12, '12 часов'], [24, 'сутки'], [48, '2 дня'], [72, '3 дня']], W.hours)}
+        ${num('f_minFit', 'подходит мне от', [[0, 'любое'], [4, '4/10'], [6, '6/10'], [8, '8/10']], W.minFit)}
+        ${num('f_media', 'формат', [['any', 'любой'], ['text', 'только текст'], ['media', 'с картинкой/видео']], W.media)}
+        ${num('f_sort', 'сортировка', [['fit', 'подходит мне'], ['noname', 'ноунейм-индекс'], ['eng', 'больше реакций'], ['replies', 'больше комментов'], ['fresh', 'свежее']], W.sort)}
+      </div>
+      <div class="row small" style="margin-top:10px;gap:14px">
+        <label class="chk"><input type="checkbox" id="f_bs" ${W.bs ? 'checked' : ''}> Bluesky</label>
+        <label class="chk"><input type="checkbox" id="f_ms" ${W.ms ? 'checked' : ''}> Mastodon</label>
+        <label class="chk"><input type="checkbox" id="f_clean" ${W.clean ? 'checked' : ''}> без политики и новостей</label>
+      </div>
+      <div class="row small" style="margin-top:10px"><span class="mut" style="width:70px">языки</span><div class="chips" id="f_langs"></div></div>
+      <div class="row small" style="margin-top:6px"><span class="mut" style="width:70px">темы</span><div class="chips" id="f_topics">${WTOPICS.map(t => `<span class="chip ${W.topics.includes(t) ? 'on' : ''}" data-topic="${t}">${t}</span>`).join('')}</div></div>
+    </div>
     <div id="wres" style="margin-top:12px"></div>
     <h2 style="margin-top:28px">Поиск в Threads</h2>
     <div class="card">
@@ -416,18 +523,33 @@ function renderTrends() {
         <select id="tper" style="width:auto"><option value="1">24 часа</option><option value="3">3 дня</option><option value="7" selected>7 дней</option><option value="30">30 дней</option></select>
         <select id="tmode" style="width:auto"><option value="KEYWORD">по словам</option><option value="TAG">по теме</option></select>
         <button class="acc" id="tgo">Искать</button></div>
-      <div class="row small" style="margin-top:10px"><label style="margin:0;display:flex;gap:6px;align-items:center;color:var(--ink)"><input type="checkbox" id="tua" checked style="width:auto"> только украиноязычные</label></div>
+      <div class="row small" style="margin-top:10px"><label class="chk"><input type="checkbox" id="tua" checked> только украиноязычные</label></div>
       <div style="margin-top:10px">${Object.entries(TREND_PRESETS).map(([g, ws]) => `<div class="row small" style="margin:4px 0"><span class="mut" style="width:90px">${g}</span><div class="chips">${ws.map(w => `<span class="chip" data-q="${w}">${w}</span>`).join('')}</div></div>`).join('')}</div>
     </div>
     <div id="tnote"></div>
     <div class="card" id="tres" style="margin-top:12px"><div class="empty">Выбери тему или введи слово</div></div>`;
   $('#trends').querySelectorAll('[data-q]').forEach(c => c.onclick = () => { $('#tq').value = c.dataset.q; search(); });
   $('#tgo').onclick = search; $('#tq').onkeydown = e => e.key === 'Enter' && search();
-  const saveW = () => { LS.set('worldCfg', { minEng: +$('#wmin').value, maxF: +$('#wmax').value, clean: $('#wclean').checked }); renderWorld(); translateVisible(); };
-  $('#wmin').onchange = $('#wmax').onchange = $('#wclean').onchange = saveW;
+  const save = () => {
+    const c = wcfg();
+    for (const k of ['minLikes', 'minReplies', 'minF', 'maxF', 'hours', 'minFit']) c[k] = +$('#f_' + k).value;
+    c.media = $('#f_media').value; c.sort = $('#f_sort').value;
+    c.bs = $('#f_bs').checked; c.ms = $('#f_ms').checked; c.clean = $('#f_clean').checked;
+    LS.set('worldCfg2', c); renderWorld(); translateVisible();
+  };
+  $('#trends').querySelectorAll('.fgrid select, #f_bs, #f_ms, #f_clean').forEach(el => el.onchange = save);
+  $('#f_topics').querySelectorAll('[data-topic]').forEach(ch => ch.onclick = () => { const c = wcfg(); const t = ch.dataset.topic; c.topics = c.topics.includes(t) ? c.topics.filter(x => x !== t) : [...c.topics, t]; LS.set('worldCfg2', c); ch.classList.toggle('on'); renderWorld(); });
   $('#wgo').onclick = () => loadWorld(true);
   renderWorld();
   if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld(); else translateVisible();
+}
+function renderLangChips() {
+  const box = $('#f_langs'); if (!box) return;
+  const W = wcfg(), cnt = {};
+  for (const i of baseFiltered(true)) { const l = langOf(i); cnt[l] = (cnt[l] || 0) + 1; }
+  const langs = Object.entries(cnt).sort((a, b) => b[1] - a[1]);
+  box.innerHTML = `<span class="chip ${W.langs.length ? '' : 'on'}" data-lang="*">все</span>` + langs.map(([l, n]) => `<span class="chip ${W.langs.includes(l) ? 'on' : ''}" data-lang="${l}">${esc(langName(l))} · ${n}</span>`).join('');
+  box.querySelectorAll('[data-lang]').forEach(ch => ch.onclick = () => { const c = wcfg(); const l = ch.dataset.lang; c.langs = l === '*' ? [] : c.langs.includes(l) ? c.langs.filter(x => x !== l) : [...c.langs, l]; LS.set('worldCfg2', c); renderWorld(); translateVisible(); });
 }
 
 // ---------- мировые тренды ----------
@@ -480,22 +602,34 @@ async function loadWorld(force) {
   } catch (e) { toast('Тренды: ' + e.message, 5000); }
   finally { if ($('#wgo')) { $('#wgo').disabled = false; $('#wgo').textContent = '↻ Найти свежее'; } }
 }
-function worldFiltered() {
-  const W = LS.get('worldCfg', { minEng: 200, maxF: 3000, clean: true });
+function baseFiltered(ignoreLang) {
+  const W = wcfg(), now = Date.now();
   return (S.world || []).filter(i => {
-    const eng = i.likes + i.replies + i.reposts;
-    if (eng < W.minEng || i.followers > W.maxF) return false;
-    if (i.lang && /^uk/.test(i.lang)) return false;
-    if (W.clean) { if (POLITICS.test(i.text)) return false; const t = S.tr[i.id]; if (t && (['політика', 'новини'].includes(t.topic) || t.fit < 3)) return false; }
+    if (i.src === 'Bluesky' && !W.bs || i.src === 'Mastodon' && !W.ms) return false;
+    if (i.likes < W.minLikes || i.replies < W.minReplies) return false;
+    if (i.followers > W.maxF || i.followers < W.minF) return false;
+    if (now - new Date(i.at) > W.hours * 3600e3) return false;
+    if (W.media === 'text' && i.media || W.media === 'media' && !i.media) return false;
+    if (langOf(i) === 'uk') return false;
+    if (!ignoreLang && W.langs.length && !W.langs.includes(langOf(i))) return false;
+    const t = S.tr[i.id];
+    if (W.clean) { if (POLITICS.test(i.text)) return false; if (t && (['політика', 'новини'].includes(t.topic) || t.fit < 3)) return false; }
+    if (t && W.minFit && t.fit < W.minFit) return false;
+    if (t && W.topics.length && !W.topics.includes(t.topic)) return false;
     return true;
-  }).sort((a, b) => {
-    const fa = S.tr[a.id]?.fit ?? 5, fb = S.tr[b.id]?.fit ?? 5;
-    if (fb !== fa) return fb - fa;
-    return (b.likes + b.replies * 3) / (b.followers + 50) - (a.likes + a.replies * 3) / (a.followers + 50);
-  }).slice(0, 40);
+  });
 }
+function worldFiltered() {
+  const W = wcfg();
+  const eng = i => i.likes + i.replies + i.reposts;
+  const noname = i => (i.likes + i.replies * 3) / (i.followers + 50);
+  const fit = i => S.tr[i.id]?.fit ?? 5;
+  const by = { fit: (a, b) => fit(b) - fit(a) || noname(b) - noname(a), noname: (a, b) => noname(b) - noname(a), eng: (a, b) => eng(b) - eng(a), replies: (a, b) => b.replies - a.replies, fresh: (a, b) => new Date(b.at) - new Date(a.at) }[W.sort] || ((a, b) => 0);
+  return baseFiltered().sort(by).slice(0, 40);
+}
+
 async function translateVisible() {
-  const need = worldFiltered().filter(i => !S.tr[i.id]).slice(0, 40);
+  const need = worldFiltered().filter(i => !S.tr[i.id]?.ua).slice(0, 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
   const chunks = []; for (let k = 0; k < need.length; k += 5) chunks.push(need.slice(k, k + 5));
   let done = 0, failed = 0;
@@ -515,33 +649,38 @@ async function translateVisible() {
   for (let k = 0; k < chunks.length; k += 3) await Promise.all(chunks.slice(k, k + 3).map(run));
   if ($('#wstat')) $('#wstat').textContent = failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
 }
-const LANGS = { en: 'англ', es: 'исп', de: 'нем', ja: 'яп', fr: 'фр', pt: 'порт', it: 'ит', nl: 'нид', pl: 'пол', ru: 'рус', ko: 'кор', zh: 'кит', tr: 'тур', sv: 'швед', fi: 'фин', cs: 'чеш' };
 function renderWorld() {
   const box = $('#wres'); if (!box) return;
+  renderLangChips();
   if (!S.world) { box.innerHTML = '<div class="card empty">Ищу залетевшие посты…</div>'; return; }
   const list = worldFiltered();
-  if ($('#wstat') && !/Перевожу|часть/.test($('#wstat').textContent)) $('#wstat').textContent = `найдено ${list.length}`;
-  box.innerHTML = list.length ? `<div class="card">${list.map(i => { const t = S.tr[i.id]; return `
-    <div class="result" id="w-${btoa(unescape(encodeURIComponent(i.id))).replace(/[^a-z0-9]/gi, '').slice(-16)}">
-      <div class="meta">${i.src} · <b>${esc(i.name || i.author)}</b> @${esc(i.author)} · ${fmt(i.followers)} подп. · ${LANGS[(i.lang || '').slice(0, 2)] || i.lang || '?'} · ${kyiv(i.at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+  if ($('#wstat') && !/Перевожу|часть|Bluesky|Mastodon|авторов/.test($('#wstat').textContent)) $('#wstat').textContent = `найдено ${list.length}`;
+  box.innerHTML = list.length ? `<div class="card">${list.map(i => { const t = S.tr[i.id]; const l = langOf(i); return `
+    <div class="result">
+      <div class="meta"><span class="pill lang">${esc(langName(l))}</span> ${i.src} · <b>${esc(i.name || i.author)}</b> @${esc(i.author)} · ${fmt(i.followers)} подп. · ${kyiv(i.at, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
         ${t ? `<span class="pill">${esc(t.topic)}</span> <span class="pill ${t.fit >= 7 ? 'ok' : t.fit >= 4 ? '' : 'warn'}">подходит ${t.fit}/10</span>` : ''}</div>
-      <div class="t">${t ? esc(t.uk) : `<span class="mut">${esc(i.text)}</span>`}</div>
-      ${t ? `<details class="small" style="margin-top:4px"><summary>оригинал</summary><div class="mut" style="white-space:pre-wrap">${esc(i.text)}</div></details>` : ''}
+      ${t?.ua ? `<div class="ua"><span class="mut small">по-нашему:</span><div class="t">${esc(t.ua)}</div></div>` : ''}
+      ${t ? `<div class="small" style="margin-top:6px"><span class="mut">перевод:</span> ${esc(t.uk)}</div>` : `<div class="t mut">${esc(i.text)}</div>`}
+      ${t ? `<details class="small" style="margin-top:4px"><summary>оригинал (${esc(langName(l))})</summary><div class="mut" style="white-space:pre-wrap">${esc(i.text)}</div></details>` : ''}
       <div class="row small" style="margin-top:6px"><span>❤ ${fmt(i.likes)}</span><span>💬 ${fmt(i.replies)}</span><span>🔁 ${fmt(i.reposts)}</span>${i.media ? '<span class="pill">с медиа</span>' : ''}
         <a href="${esc(i.url)}" target="_blank" rel="noopener">открыть ↗</a><span class="sp"></span>
-        <button class="acc sm" data-adapt="${esc(i.id)}">✨ Идеи для меня</button><button class="ghost sm" data-wclaude="${esc(i.id)}">в Claude</button></div>
+        ${t?.ua ? `<button class="ghost sm" data-uadraft="${esc(i.id)}">В черновики</button>` : ''}
+        <button class="acc sm" data-adapt="${esc(i.id)}">✨ Ещё идеи</button><button class="ghost sm" data-wclaude="${esc(i.id)}">в Claude</button></div>
       <div class="variants" data-out="${esc(i.id)}"></div>
-    </div>`; }).join('')}</div>` : '<div class="card empty">Под эти фильтры ничего нет — снизь порог реакций или подними лимит подписчиков</div>';
+    </div>`; }).join('')}</div>` : '<div class="card empty">Под эти фильтры ничего нет — ослабь фильтры или нажми «Найти свежее»</div>';
   box.querySelectorAll('[data-adapt]').forEach(b => b.onclick = () => adaptIdea(b.dataset.adapt, b));
-  box.querySelectorAll('[data-wclaude]').forEach(b => b.onclick = () => { const i = S.world.find(x => x.id === b.dataset.wclaude); copy(`Этот пост залетел в ${i.src} (${fmt(i.likes)} лайков, ${fmt(i.replies)} ответов, у автора ${fmt(i.followers)} подписчиков):\n"${i.text}"\n${i.url}\n\nНе копируй — возьми механику и придумай 5 оригинальных постов для моего украинского Threads (скилл threads-posts).`, 'Скопировано — вставь в чат с Claude'); });
+  box.querySelectorAll('[data-uadraft]').forEach(b => b.onclick = () => { addDraft(S.tr[b.dataset.uadraft].ua, ''); b.disabled = true; b.textContent = 'В черновиках ✓'; });
+  box.querySelectorAll('[data-wclaude]').forEach(b => b.onclick = () => { const i = S.world.find(x => x.id === b.dataset.wclaude); copy(`Этот пост залетел в ${i.src} (${langName(langOf(i))}, ${fmt(i.likes)} лайков, ${fmt(i.replies)} ответов, у автора ${fmt(i.followers)} подписчиков):\n"${i.text}"\n${i.url}\n\nНе копируй — возьми механику и придумай 5 оригинальных постов для моего украинского Threads (скилл threads-posts).`, 'Скопировано — вставь в чат с Claude'); });
 }
+function addDraft(text, tag) { if (!text) return; S.drafts.unshift({ id: Date.now() + Math.random(), text, topic_tag: tag || '' }); LS.set('drafts', S.drafts); window.__renderDrafts?.(); toast('В черновиках Студии ✓'); }
+
 async function adaptIdea(id, btn) {
   const i = S.world.find(x => x.id === id); const out = document.querySelector(`[data-out="${CSS.escape(id)}"]`);
   btn.disabled = true; btn.textContent = 'Думаю…';
   try {
     const r = await api('/adapt', { method: 'POST', body: { text: (S.tr[id]?.uk ? S.tr[id].uk + '\n(оригінал: ' + i.text + ')' : i.text) } });
     out.innerHTML = r.variants.map((v, k) => `<div class="variant"><textarea>${esc(v)}</textarea><div class="acts"><button class="sm" data-draft="${k}">В черновики</button><button class="ghost sm" data-cpv="${k}">Копия</button></div></div>`).join('');
-    out.querySelectorAll('[data-draft]').forEach(b => b.onclick = () => { const v = b.closest('.variant').querySelector('textarea').value.trim(); S.drafts.unshift({ id: Date.now(), text: v, topic_tag: '' }); LS.set('drafts', S.drafts); toast('В черновиках Студии ✓'); });
+    out.querySelectorAll('[data-draft]').forEach(b => b.onclick = () => { addDraft(b.closest('.variant').querySelector('textarea').value.trim(), ''); b.disabled = true; });
     out.querySelectorAll('[data-cpv]').forEach(b => b.onclick = () => copy(b.closest('.variant').querySelector('textarea').value));
   } catch (e) { out.innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)}</p>`; }
   finally { btn.disabled = false; btn.textContent = '✨ Ещё идеи'; }
@@ -635,6 +774,7 @@ async function sendReply(id, text, btn) {
   btn.disabled = true; btn.textContent = 'Отправляю…';
   try {
     await api('/reply', { method: 'POST', body: { reply_to_id: id, text } });
+    feedback(text, 'ok', [], 'reply');
     S.done[id] = 'sent'; LS.set('doneReplies', S.done); updateBadge();
     const el = $('#cm-' + id); el.style.opacity = .5; $('#var-' + id).innerHTML = `<p class="small up">Отправлено ✓ «${esc(text)}»</p>`;
     toast('Ответ отправлен ✓');
@@ -669,6 +809,25 @@ function renderConnect() {
         </ol>
         <p class="mut small">Токен хранится только в твоём Cloudflare Worker, не на этом сайте и не на GitHub. Ключ доступа хранится в этом браузере — на телефоне введи его один раз.</p>
       </div>
+    </div>
+    <h2>ИИ</h2>
+    <div class="grid two">
+      <div class="card">
+        <div class="small" id="aistat">${S.me?.ai ? (S.me.ai.provider === 'claude' ? `✅ Подключён <b>Claude</b>: пишет ${esc(S.me.ai.writeModel)}, переводит ${esc(S.me.ai.fastModel)}` : 'Сейчас работает бесплатный <b>Workers AI</b>. Подключи Claude, чтобы посты и ответы писал я.') : ''}</div>
+        <label>Anthropic API key</label><input id="akey" type="password" placeholder="sk-ant-…" autocomplete="off">
+        <label>Модель для постов и ответов</label><select id="awrite"><option value="claude-sonnet-5-5">Claude Sonnet 5.5 — лучший баланс (рекомендую)</option><option value="claude-opus-5-5">Claude Opus 5.5 — самый умный, дороже</option><option value="claude-haiku-5-5">Claude Haiku 5.5 — самый дешёвый</option></select>
+        <label>Модель для перевода трендов</label><select id="afast"><option value="claude-haiku-5-5">Claude Haiku 5.5 (рекомендую)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
+        <div class="row" style="margin-top:14px"><button class="acc" id="asave">Подключить Claude</button><button class="ghost" id="aremove">Вернуть бесплатный ИИ</button></div>
+      </div>
+      <div class="card">
+        <h3>Как подключить Claude</h3>
+        <ol class="steps small">
+          <li>Открой <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com → API Keys</a> (вход тем же аккаунтом или новым).</li>
+          <li>В Billing пополни баланс — хватит $5: 10 черновиков на Sonnet стоят примерно 1-3 цента, перевод 40 трендов на Haiku — меньше цента.</li>
+          <li>Create Key → скопируй ключ (sk-ant-…) и вставь слева.</li>
+        </ol>
+        <p class="mut small">Ключ хранится только в твоём Cloudflare Worker. Подписка Claude Pro/Max сюда не подходит — сайту нужен отдельный API-ключ.</p>
+      </div>
     </div>`;
   $('#csave').onclick = async () => {
     S.worker = $('#cw').value.trim(); S.key = $('#ck').value; LS.set('worker', S.worker); LS.set('key', S.key);
@@ -678,6 +837,15 @@ function renderConnect() {
       await syncAll(); toast('Готово ✓'); location.hash = '#overview';
     } catch (e) { $('#cstat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
   };
+  if (S.me?.ai) { $('#awrite').value = S.me.ai.writeModel; $('#afast').value = S.me.ai.fastModel; }
+  $('#asave').onclick = async () => {
+    const key = $('#akey').value.trim();
+    if (!key && S.me?.ai?.provider !== 'claude') return toast('Вставь API key');
+    const b = $('#asave'); b.disabled = true; b.textContent = 'Проверяю…';
+    try { await api('/aikey', { method: 'POST', body: { key, writeModel: $('#awrite').value, fastModel: $('#afast').value } }); $('#akey').value = ''; S.me = await api('/me'); LS.set('me', S.me); toast('Claude подключён ✓'); renderConnect(); }
+    catch (e) { $('#aistat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; b.disabled = false; b.textContent = 'Подключить Claude'; }
+  };
+  $('#aremove').onclick = async () => { if (!confirm('Отключить Claude и вернуться к бесплатному ИИ?')) return; try { await api('/aikey', { method: 'POST', body: { remove: true } }); S.me = await api('/me'); LS.set('me', S.me); renderConnect(); } catch (e) { toast(e.message); } };
   $('#ctoken').onclick = async () => {
     const token = $('#ct').value.trim(); if (!token) return toast('Вставь новый токен');
     try { await api('/token', { method: 'POST', body: { token } }); $('#ct').value = ''; await syncAll(); toast('Токен заменён ✓'); }

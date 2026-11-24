@@ -224,23 +224,26 @@ async function inbox(cfg, days = 14, includeAnswered = false) {
   return out;
 }
 
-const STYLE = `Ти пишеш відповіді на коментарі під постами в Threads від імені Карини (@karinella.karamel).
-Її стиль: українська, розмовна, часто з малої літери; самоіронія, точні життєві спостереження, інтелектуальний сарказм, несподіваний поворот. Коротко: 1-2 речення, до 200 символів.
-Правила: тільки звичайний дефіс "-" і прямі лапки ", ніяких довгих тире, «ялинок», хештегів і емодзі-гірлянд. Без моралізаторства, без шаблонного SMM, без "дякую за коментар", без порожніх "згодна!". Не вигадуй фактів про Карину.
-Мета: продовжити розмову, щоб людина захотіла відповісти ще раз (це головний сигнал для рекомендацій Threads), і щоб інші читачі захотіли зайти в профіль.
-Якщо коментар про біль, депресію, терапію чи важкий досвід - відповідай тепло й бережно, як психолог зі співчуттям, без жартів над людиною.
-Якщо коментар грубий або провокаційний - спокійно і дотепно, без агресії.
-Відповідай мовою коментаря (якщо коментар російською - все одно українською, але м'яко).`;
+// ---------- ИИ: Claude (если задан ключ) или бесплатный Workers AI ----------
+const BASE_STYLE = `Ти пишеш від імені Карини (@karinella.karamel) для українського Threads.
+Її стиль: українська, розмовна, часто з малої літери; самоіронія, точні життєві спостереження, несподіване порівняння, інтелектуальний сарказм, поворот у кінці. Теми: стосунки, психологія, робота/IT, гроші/інфобізнес, ШІ, соцмережі.
+Правила: тільки дефіс "-" і прямі лапки ", ніяких довгих тире, «ялинок», хештегів, емодзі-гірлянд. Без моралізаторства, без шаблонного SMM, без штучних "що думаєте?", "згодні?", "а ви як?", без приманок типу "лайкни". Не вигадуй фактів про Карину. Ніякого суржику і русизмів.
+Алгоритм Threads: головне - щоб людині захотілося ВІДПОВІСТИ своєю історією (конкретний привід, колекція, рейтинг, спірна теза з нюансом), гачок у першому рядку, коротко (до 280 символів), оригінально, у її нішах.`;
+const REPLY_STYLE = BASE_STYLE + `
+Зараз ти пишеш ВІДПОВІДІ на коментарі під її постами: 1-2 речення, до 200 символів. Мета - продовжити розмову, щоб людина відповіла ще раз, а інші зайшли в профіль. Без "дякую за коментар" і порожніх "згодна!".
+Якщо коментар про біль, депресію, терапію чи важкий досвід - тепло й бережно, як психолог зі співчуттям, без жартів над людиною. Якщо грубий - спокійно і дотепно.`;
 
 function extractJson(t) {
   if (!t) return null;
-  const m = String(t).match(/\[[\s\S]*\]/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
+  const s = String(t);
+  const a = s.indexOf('['), b = s.lastIndexOf(']');
+  if (a < 0 || b <= a) return null;
+  try { return JSON.parse(s.slice(a, b + 1)); } catch { return null; }
 }
 function aiText(r) {
   if (!r) return '';
   if (typeof r === 'string') return r;
+  if (Array.isArray(r.content)) return r.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
   if (typeof r.response === 'string') return r.response;
   if (r.response && typeof r.response === 'object') return JSON.stringify(r.response);
   if (r.choices?.[0]?.message?.content) return r.choices[0].message.content;
@@ -248,65 +251,120 @@ function aiText(r) {
   if (r.result) return aiText(r.result);
   return JSON.stringify(r);
 }
+const fixTypo = t => String(t || '').replace(/[‐-―−]/g, '-').replace(/ /g, ' ').replace(/[«»“”„]/g, '"').trim();
 
-async function suggest(env, { post, comment, chain = [], hint = '' }) {
-  const ctx = [`Пост Карини: "${post}"`, ...chain.map(c => `${c.mine ? 'Карина' : '@' + c.username}: "${c.text}"`), `Коментар, на який треба відповісти: "${comment}"`].join('\n');
-  const task = `${ctx}\n${hint ? 'Побажання Карини: ' + hint + '\n' : ''}\nНапиши 3 різні варіанти відповіді: 1) продовжити жарт/думку з власним поворотом, 2) по-людськи тепло або з нюансом, 3) з конкретним питанням, на яке хочеться відповісти. Поверни ТІЛЬКИ JSON-масив з 3 рядків, без пояснень.`;
-  const messages = [{ role: 'system', content: STYLE }, { role: 'user', content: task }];
-  const models = [
-    ['@cf/openai/gpt-oss-120b', { messages, max_tokens: 2000, reasoning: { effort: 'low' } }],
-    ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', { messages, max_tokens: 600, temperature: 0.8 }],
-  ];
-  let lastErr;
-  for (const [m, input] of models) {
-    try {
-      const r = await env.AI.run(m, input);
-      const arr = extractJson(aiText(r));
-      if (Array.isArray(arr) && arr.length) {
-        const clean = arr.map(x => String(typeof x === 'object' ? (x.text || x.reply || Object.values(x)[0]) : x).replace(/[\u2010-\u2015\u2212]/g, '-').replace(/[«»“”„]/g, '"').trim()).filter(Boolean).slice(0, 3);
-        if (clean.length) return { model: m, variants: clean };
-      }
-      lastErr = new Error('Модель вернула пустой ответ');
-    } catch (e) { lastErr = e; }
-  }
-  throw lastErr || new Error('ИИ недоступен');
+async function claude(key, model, system, user, maxTokens) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model, max_tokens: maxTokens, system, messages: [{ role: 'user', content: user }] }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError('Claude: ' + (data.error?.message || 'HTTP ' + res.status), res.status === 401 ? 400 : 502);
+  return aiText(data);
 }
 
-
-async function aiJson(env, system, user, maxTokens = 3000) {
+// tier: 'write' (посты/ответы) или 'fast' (перевод, разбор)
+async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) {
+  const cfg = await getCfg(env);
+  if (cfg?.anthropicKey) {
+    const model = tier === 'fast' ? (cfg.fastModel || 'claude-haiku-5-5') : (cfg.writeModel || 'claude-sonnet-5-5');
+    return { text: await claude(cfg.anthropicKey, model, system, user, maxTokens), model };
+  }
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }];
   const models = [
     ['@cf/openai/gpt-oss-120b', { messages, max_tokens: maxTokens, reasoning: { effort: 'low' } }],
-    ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', { messages, max_tokens: Math.min(maxTokens, 2000), temperature: 0.5 }],
+    ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', { messages, max_tokens: Math.min(maxTokens, 2000), temperature: 0.7 }],
   ];
   let lastErr;
   for (const [m, input] of models) {
-    try { const arr = extractJson(aiText(await env.AI.run(m, input))); if (Array.isArray(arr) && arr.length) return arr; lastErr = new Error('Пустой ответ модели'); }
-    catch (e) { lastErr = e; }
+    try { const t = aiText(await env.AI.run(m, input)); if (t) return { text: t, model: m }; } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('ИИ недоступен');
+}
+async function aiJson(env, system, user, opts) {
+  let lastErr;
+  for (let i = 0; i < 2; i++) {
+    try { const r = await ai(env, system, user, opts); const arr = extractJson(r.text); if (Array.isArray(arr) && arr.length) return { arr, model: r.model }; lastErr = new Error('ИИ вернул не JSON'); }
+    catch (e) { lastErr = e; if (e.message?.startsWith('Claude:')) break; }
   }
   throw lastErr;
 }
-const fixTypo = t => String(t || '').replace(/[\u2010-\u2015\u2212]/g, '-').replace(/\u00a0/g, ' ').replace(/[«»“”„]/g, '"').trim();
+const strOf = x => fixTypo(typeof x === 'object' && x ? (x.text || x.reply || Object.values(x)[0]) : x);
+
+// ---------- обучение на оценках ----------
+async function getPrefs(env) { return (await env.TS.get('prefs', 'json')) || { liked: [], disliked: [], notes: '', manual: '', sinceLearn: 0 }; }
+async function putPrefs(env, p) { await env.TS.put('prefs', JSON.stringify(p)); }
+function prefsBlock(p, kind) {
+  const L = p.liked.filter(x => (x.kind || 'post') === kind).slice(-12);
+  const D = p.disliked.filter(x => (x.kind || 'post') === kind).slice(-12);
+  let s = '';
+  if (p.manual) s += `\nПравила від самої Карини (найважливіше):\n${p.manual}\n`;
+  if (p.notes) s += `\nЩо ми вже знаємо про її смак:\n${p.notes}\n`;
+  if (L.length) s += `\nПриклади, які їй СПОДОБАЛИСЬ:\n${L.map(x => '+ ' + x.text.replace(/\n/g, ' / ')).join('\n')}\n`;
+  if (D.length) s += `\nПриклади, які вона ВІДХИЛИЛА (не повторюй такого):\n${D.map(x => '- ' + x.text.replace(/\n/g, ' / ') + (x.reasons?.length ? ` [причина: ${x.reasons.join(', ')}]` : '')).join('\n')}\n`;
+  return s;
+}
+async function learn(env) {
+  const p = await getPrefs(env);
+  if (p.liked.length + p.disliked.length < 4) return p;
+  const user = `Ось оцінки Карини до чернеток постів і відповідей.
+СПОДОБАЛОСЬ:\n${p.liked.slice(-40).map(x => '+ ' + x.text.replace(/\n/g, ' / ')).join('\n')}
+НЕ СПОДОБАЛОСЬ:\n${p.disliked.slice(-40).map(x => '- ' + x.text.replace(/\n/g, ' / ') + (x.reasons?.length ? ` [${x.reasons.join(', ')}]` : '')).join('\n')}
+Сформулюй 5-10 коротких конкретних правил її смаку (що робити і чого уникати), кожне з нового рядка, починаючи з "- ". Тільки правила, без вступу. Українською.`;
+  try {
+    const r = await ai(env, 'Ти аналітик стилю авторки соцмереж.', user, { maxTokens: 1500, tier: 'write' });
+    p.notes = fixTypo(r.text).split('\n').filter(l => l.trim().startsWith('-')).slice(0, 10).join('\n') || p.notes;
+    p.sinceLearn = 0; p.learnedAt = new Date().toISOString();
+    await putPrefs(env, p);
+  } catch {}
+  return p;
+}
+
+// ---------- генерация ----------
+async function suggest(env, { post, comment, chain = [], hint = '' }) {
+  const p = await getPrefs(env);
+  const ctx = [`Пост Карини: "${post}"`, ...chain.map(c => `${c.mine ? 'Карина' : '@' + c.username}: "${c.text}"`), `Коментар, на який треба відповісти: "${comment}"`].join('\n');
+  const user = `${ctx}\n${hint ? 'Побажання Карини: ' + hint + '\n' : ''}\nНапиши 3 різні варіанти відповіді: 1) продовжити жарт/думку з власним поворотом, 2) по-людськи тепло або з нюансом, 3) з конкретним питанням, на яке хочеться відповісти. Поверни ТІЛЬКИ JSON-масив з 3 рядків.`;
+  const { arr, model } = await aiJson(env, REPLY_STYLE + prefsBlock(p, 'reply'), user, { maxTokens: 2000 });
+  return { model, variants: arr.map(strOf).filter(Boolean).slice(0, 3) };
+}
+
+async function generate(env, { count = 10, topic = '', hint = '', best = [], recent = [] }) {
+  const p = await getPrefs(env);
+  count = Math.max(3, Math.min(+count || 10, 15));
+  const user = `${best.length ? 'Її пости з найкращою статистикою (на них орієнтуйся):\n' + best.map(b => `* "${b.text}" (перегляди ${b.views}, відповіді ${b.replies}, ER ${b.er})`).join('\n') + '\n' : ''}${recent.length ? 'Недавні пости (НЕ повторюй ці ідеї і механіки):\n' + recent.map(r => '* ' + r).join('\n') + '\n' : ''}
+Сьогодні ${new Date().toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv', weekday: 'long', day: 'numeric', month: 'long' })} - якщо доречно, прив'яжи частину ідей до сезону, дня тижня чи актуальних буденних подій.
+${topic ? 'Тема: ' + topic + '\n' : 'Теми різні, з її ніш.\n'}${hint ? 'Побажання: ' + hint + '\n' : ''}
+Напиши ${count} РІЗНИХ чернеток постів (різні механіки: колекція/музей, рейтинг, словник-переклад, спірна теза з нюансом, мікроісторія з поворотом, порівняння). Для кожної поверни об'єкт:
+{"text": пост до 280 символів, "topic_tag": одна тема з [психологія, стосунки, айті, робота, гроші, гумор, життя, соцмережі, штучний інтелект], "why": одне коротке речення чому люди захочуть відповісти, "score": твій прогноз 1-10 наскільки зайде}
+Поверни ТІЛЬКИ JSON-масив.`;
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 5000 });
+  return { model, drafts: arr.filter(x => x && (x.text || typeof x === 'string')).map(x => ({ text: strOf(x.text ?? x), topic_tag: fixTypo(x.topic_tag || ''), why: fixTypo(x.why || ''), score: +x.score || null })).slice(0, count) };
+}
 
 async function translate(env, items) {
   const list = items.slice(0, 8).map(i => ({ id: i.id, text: String(i.text || '').slice(0, 700) }));
-  const sys = 'Ти перекладач і редактор соцмереж. Перекладаєш пости з будь-яких мов на живу розмовну українську, зберігаючи жарт, гру слів (якщо гра слів не перекладається - передай сенс). Типографіка: тільки дефіс "-" і прямі лапки.';
-  const user = `Для кожного поста поверни об'єкт {"id","uk","topic","fit"}:
-- uk: переклад українською;
+  const sys = 'Ти перекладач і редактор соцмереж. Перекладаєш пости з будь-яких мов на живу розмовну українську. Типографіка: тільки дефіс "-" і прямі лапки. Ніякого суржику.';
+  const user = `Для кожного поста поверни об'єкт {"id","lang","uk","ua","topic","fit"}:
+- lang: ISO-код мови оригіналу (en, es, de, ja, pt...);
+- uk: точний переклад українською;
+- ua: "на український манер" - та сама механіка і жарт, але переписано так, ніби це написала українка в Threads: українські реалії (Нова пошта, Монобанк, укрзалізниця, свекруха, айтішка у Львові, ЖЕК, світло за графіком тощо, якщо доречно), розмовно, з малої літери, до 280 символів. Не дослівно!
 - topic: одне слово з [стосунки, психологія, робота, айті, гроші, гумор, життя, соцмережі, ші, політика, новини, інше];
-- fit: 0-10, наскільки механіка поста підходить для україномовного Threads-акаунта про стосунки, психологію, роботу/IT, гроші, ШІ з самоіронією (політика і новини = 0-2).
+- fit: 0-10, наскільки механіка підходить для україномовного Threads-акаунта про стосунки, психологію, роботу/IT, гроші, ШІ з самоіронією (політика і новини = 0-2).
 Поверни ТІЛЬКИ JSON-масив.
 ${JSON.stringify(list)}`;
-  const arr = await aiJson(env, sys, user, 2500);
-  return arr.map(x => ({ id: String(x.id), uk: fixTypo(x.uk), topic: x.topic, fit: +x.fit || 0 }));
+  const { arr } = await aiJson(env, sys, user, { maxTokens: 4000, tier: 'fast' });
+  return arr.map(x => ({ id: String(x.id), lang: String(x.lang || '').toLowerCase().slice(0, 5), uk: fixTypo(x.uk), ua: fixTypo(x.ua), topic: x.topic, fit: +x.fit || 0 }));
 }
 
 async function adapt(env, { text, hint = '' }) {
+  const p = await getPrefs(env);
   const user = `Ось пост, який залетів в іншій країні:\n"${text}"\n${hint ? 'Побажання: ' + hint + '\n' : ''}
-Не копіюй і не перекладай його. Візьми МЕХАНІКУ (чому люди хочуть відповісти) і напиши 3 оригінальні пости для українського Threads Карини на її теми, з українськими реаліями. Кожен до 280 символів, з конкретним приводом відповісти, без штучних "що думаєте?".
+Не копіюй і не перекладай його дослівно. Зрозумій, ЧОМУ люди на нього реагують (механіка), і напиши 3 оригінальні пости для українського Threads Карини з тією ж механікою, але з українськими реаліями і на її теми. Кожен до 280 символів, з конкретним приводом відповісти.
 Поверни ТІЛЬКИ JSON-масив з 3 рядків.`;
-  const arr = await aiJson(env, STYLE.replace('відповіді на коментарі під постами', 'пости'), user, 2500);
-  return { variants: arr.map(x => fixTypo(typeof x === 'object' ? (x.text || Object.values(x)[0]) : x)).filter(Boolean).slice(0, 3) };
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2500 });
+  return { model, variants: arr.map(strOf).filter(Boolean).slice(0, 3) };
 }
 
 async function replyTo(cfg, { reply_to_id, text }) {
@@ -322,7 +380,7 @@ async function replyTo(cfg, { reply_to_id, text }) {
 
 // ---------- HTTP ----------
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors(req) });
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -361,7 +419,7 @@ export default {
         let followers = null;
         try { followers = (await th(cfg.token, `/${cfg.userId}/threads_insights`, { metric: 'followers_count' })).data?.[0]?.total_value?.value; } catch {}
         const c2 = await getCfg(env);
-        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError } });
+        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError }, ai: { provider: c2.anthropicKey ? 'claude' : 'workers-ai', writeModel: c2.writeModel || 'claude-sonnet-5-5', fastModel: c2.fastModel || 'claude-haiku-5-5' } });
       }
       if (path === '/posts') return json(req, await fetchPosts(cfg, Math.min(+qs.limit || 40, 45), qs.after));
       if (path === '/insights') return json(req, await userInsights(cfg, qs.since, qs.until));
@@ -389,6 +447,29 @@ export default {
       if (path === '/suggest' && req.method === 'POST') {
         if (!body.comment) return json(req, { error: 'Нет текста комментария' }, 400);
         return json(req, await suggest(env, body));
+      }
+      if (path === '/generate' && req.method === 'POST') return json(req, await generate(env, body));
+      if (path === '/prefs' && req.method === 'GET') { const p = await getPrefs(env); return json(req, { liked: p.liked.length, disliked: p.disliked.length, notes: p.notes, manual: p.manual, learnedAt: p.learnedAt || null }); }
+      if (path === '/prefs' && req.method === 'POST') { const p = await getPrefs(env); p.manual = String(body.manual || '').slice(0, 3000); await putPrefs(env, p); return json(req, { ok: true }); }
+      if (path === '/learn' && req.method === 'POST') { const p = await learn(env); return json(req, { notes: p.notes, learnedAt: p.learnedAt || null }); }
+      if (path === '/feedback' && req.method === 'POST') {
+        if (!body.text?.trim()) return json(req, { error: 'Нет текста' }, 400);
+        const p = await getPrefs(env);
+        const item = { text: String(body.text).slice(0, 600), kind: body.kind === 'reply' ? 'reply' : 'post', reasons: (body.reasons || []).slice(0, 5), at: new Date().toISOString() };
+        const key = body.verdict === 'ok' ? 'liked' : 'disliked';
+        p[key] = [...p[key].filter(x => x.text !== item.text), item].slice(-80);
+        p.sinceLearn = (p.sinceLearn || 0) + 1;
+        await putPrefs(env, p);
+        if (p.sinceLearn >= 8) ctx.waitUntil(learn(env));
+        return json(req, { ok: true, liked: p.liked.length, disliked: p.disliked.length });
+      }
+      if (path === '/aikey' && req.method === 'POST') {
+        if (body.remove) { delete cfg.anthropicKey; await putCfg(env, cfg); return json(req, { ok: true, provider: 'workers-ai' }); }
+        const writeModel = body.writeModel || 'claude-sonnet-5-5', fastModel = body.fastModel || 'claude-haiku-5-5';
+        if (body.key) await claude(body.key, fastModel, 'Відповідай одним словом.', 'Скажи "так".', 20);
+        Object.assign(cfg, { writeModel, fastModel }, body.key ? { anthropicKey: body.key } : {});
+        await putCfg(env, cfg);
+        return json(req, { ok: true, provider: cfg.anthropicKey ? 'claude' : 'workers-ai', writeModel, fastModel });
       }
       if (path === '/translate' && req.method === 'POST') return json(req, await translate(env, body.items || []));
       if (path === '/adapt' && req.method === 'POST') return json(req, await adapt(env, body));

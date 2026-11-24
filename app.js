@@ -80,7 +80,17 @@ function autoTag(text) {
   const hit = Object.entries(CORE_TOPICS).find(([, ws]) => ws.some(w => low.includes(w)));
   return hit ? NICHE_TAG[hit[0]] : 'гумор';
 }
+function splitHook(t) {
+  const lines = t.trim().split('\n'); const first = lines[0];
+  if (first.length <= 100) return t;
+  const m = first.slice(0, 100).match(/^(.*[.!?…])\s+/s);
+  if (m && m[1].length >= 20) { lines[0] = m[1]; lines.splice(1, 0, first.slice(m[0].length)); return lines.join('\n'); }
+  const c = first.slice(0, 100).lastIndexOf(', ');
+  if (c > 30) { lines[0] = first.slice(0, c); lines.splice(1, 0, first.slice(c + 2)); return lines.join('\n'); }
+  return t;
+}
 function localFix(t) {
+  t = splitHook(t);
   return t.replace(/[‐-―−]/g, '-').replace(/[«»“”„]/g, '"').replace(/https?:\/\/\S+/g, '').replace(/(^|\s)#[\p{L}\p{N}_]+/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 // доводит текст до 100 по проверкам: локальные правки + до 3 раундов точечных правок ИИ
@@ -95,7 +105,7 @@ async function polishTo100(text, tag, original, onStep) {
     try {
       const out = await api('/improve', { method: 'POST', body: { text: cur, tag: t, fix: fixes } });
       if (out.variants?.[0]?.text) cur = localFix(out.variants[0].text);
-    } catch { break; }
+    } catch (e) { const r2 = analyzePost(cur, t, null, { ignore: original }); return { text: cur, tag: t, score: r2.score, fails: r2.checks.filter(c => !c.ok), error: e.message }; }
     if (!tag) t = autoTag(cur);
   }
   const r = analyzePost(cur, t, null, { ignore: original });
@@ -125,7 +135,7 @@ function analyzePost(text, tag, whenMs, opts = {}) {
   add(!/https?:\/\//.test(t), 'Без внешних ссылок', 'Ссылки уводят из приложения; лучше ссылку в первом своём ответе', 5, 'link', 'прибери посилання');
   add(!/[—«»“”]/.test(t), 'Твой стиль: «-» и прямые кавычки', 'Длинное тире и «ёлочки» выдают ИИ-текст', 5, 'style', 'тільки дефіс "-" і прямі лапки');
   const hits = Object.entries(CORE_TOPICS).filter(([, ws]) => ws.some(w => low.includes(w))).map(([k]) => k);
-  add(hits.length > 0, hits.length ? `В твоей нише: ${hits.join(', ')}` : 'Тема вне твоей ниши', 'Рекомендации учат, кому тебя показывать, по повторяющимся темам — держи 3-4 постоянные', 8, 'niche', `природно впиши хоча б одне з цих слів: ${nicheWords(tag)}`);
+  add(hits.length > 0 || TOPIC_TAGS.includes(tag), hits.length ? `В твоей нише: ${hits.join(', ')}` : TOPIC_TAGS.includes(tag) ? `В твоей нише: ${tag}` : 'Тема вне твоей ниши', 'Рекомендации учат, кому тебя показывать, по повторяющимся темам — держи 3-4 постоянные', 8, 'niche', `природно впиши хоча б одне з цих слів: ${nicheWords(tag)}`);
   const tk = tokens(t);
   const sim = rootPosts().slice(0, 15).filter(p => !opts.ignore || jaccard(tokens(opts.ignore), tokens(p.text || '')) < 0.6).map(p => ({ p, s: jaccard(tk, tokens(p.text || '')) })).sort((a, b) => b.s - a.s)[0];
   add(!sim || sim.s < 0.3, sim && sim.s >= 0.3 ? 'Похоже на недавний пост' : 'Не повторяет недавние посты', 'Оригинальность и свежесть — прямые приоритеты ранжирования', 8, 'similar', sim ? `переформулюй, щоб текст суттєво відрізнявся від мого поста: "${(sim.p.text || '').slice(0, 200)}"` : '');
@@ -513,7 +523,7 @@ function renderStudio() {
     try {
       const p = await polishTo100(text, tg.value.trim(), null, n => { b.textContent = `Правка ${n}…`; });
       ta.value = p.text; if (!tg.value.trim()) tg.value = p.tag; update();
-      toast(p.score >= 100 ? 'Готово: 100 по тексту ✓' : `Дотянула до ${p.score}: ${p.fails.map(f => f.title).join('; ')}`, 6000);
+      toast(p.score >= 100 ? 'Готово: 100 по тексту ✓' : p.error ? `ИИ не ответил: ${p.error}. Нажми ещё раз` : `Дотянула до ${p.score}: ${p.fails.map(f => f.title).join('; ')}`, 7000);
     } finally { b.disabled = false; b.textContent = 'Довести до 100'; }
   };
   $('#impAsk').onclick = () => { const t = ta.value.trim(); if (!t) return toast('Сначала напиши текст'); askAI(`Улучши этот мой черновик для алгоритма Threads (скилл threads-posts). Сохрани мою мысль и голос, дай 3 варианта: минимальная правка, сильнее поворот, смелее.${$('#ihint').value.trim() ? '\nЧто хочу изменить: ' + $('#ihint').value.trim() : ''}\n\n"${t}"`); };

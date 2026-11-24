@@ -376,8 +376,19 @@ async function improve(env, { text, hint = '', tag = '', fix = null }) {
 Внеси ТІЛЬКИ ці правки, усе інше (думку, голос, жарт, поворот) збережи:\n${fix.map(f => '- ' + f).join('\n')}
 Обов'язково: до 270 символів; перший рядок - гачок до 90 символів і потім перенос рядка; останній рядок - конкретне питання до читачів, що закінчується "?"; тільки дефіс "-" і прямі лапки; без хештегів і посилань.
 Поверни ТІЛЬКИ JSON-масив з 1 об'єкта {"text": виправлений пост}.`;
-    const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 1500 });
-    return { model, variants: arr.map(x => ({ text: strOf(x.text ?? x), note: '' })).filter(v => v.text).slice(0, 1) };
+    let lastRaw = '', model = '';
+    for (let i = 0; i < 2; i++) {
+      const r = await ai(env, BASE_STYLE + prefsBlock(p, 'post'), user, { maxTokens: 2000 });
+      model = r.model; lastRaw = r.text || '';
+      const arr = extractJson(lastRaw);
+      let t = '';
+      if (Array.isArray(arr) && arr.length) t = strOf(arr[0]?.text ?? arr[0]);
+      if (!t) { const m = lastRaw.match(/"text"\s*:\s*"((?:[^"\\]|\\.)*)"/); if (m) { try { t = JSON.parse('"' + m[1] + '"'); } catch {} } }
+      if (!t && lastRaw && !/[\[{]/.test(lastRaw.trim()[0] || '')) t = lastRaw.trim().replace(/^["']|["']$/g, '');
+      t = fixTypo(t);
+      if (t && t.length > 10) return { model, variants: [{ text: t, note: '' }] };
+    }
+    throw new ApiError('ИИ не смог исправить текст, попробуй ещё раз', 502);
   }
   const user = `Ось чернетка поста Карини:\n"${text}"\n${tag ? 'Тема: ' + tag + '\n' : ''}${hint ? 'Що вона хоче змінити: ' + hint + '\n' : ''}
 Покращ її для алгоритму Threads, зберігши її голос і головну думку (не підміняй ідею своєю). Що можна робити: сильніший гачок у першому рядку, коротше і щільніше, точніша деталь, різкіший поворот у кінці, конкретний привід відповісти (без штучних питань), прибрати воду, канцелярит, суржик, довгі тире.

@@ -265,6 +265,31 @@ async function claude(key, model, system, user, maxTokens) {
   return aiText(data);
 }
 
+async function gemini(key, model, system, user, maxTokens) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+  const body = JSON.stringify({ systemInstruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts: [{ text: user }] }], generationConfig: { maxOutputTokens: Math.max(maxTokens * 2, 8192), temperature: 0.9 } });
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const res = await fetch(url, { method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, body });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 429 && attempt < 2) { await sleep(6000 * (attempt + 1)); continue; }
+    if (res.status === 429) throw new ApiError('Gemini: бесплатный лимит запросов на минуту/день исчерпан, подожди немного', 429);
+    if (res.status === 400 && /API key/i.test(data.error?.message || '')) throw new ApiError('Gemini: неверный API-ключ', 400);
+    if (!res.ok) throw new ApiError('Gemini: ' + (data.error?.message || 'HTTP ' + res.status), 502);
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
+    if (!text && data.promptFeedback?.blockReason) throw new ApiError('Gemini отказался отвечать (' + data.promptFeedback.blockReason + ')', 400);
+    return text;
+  }
+}
+async function geminiModels(key) {
+  const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError('Gemini: ' + (data.error?.message || 'HTTP ' + res.status), 400);
+  const ids = (data.models || []).filter(m => (m.supportedGenerationMethods || []).includes('generateContent')).map(m => m.name.replace(/^models\//, ''))
+    .filter(id => /^gemini/.test(id) && !/(embedding|image|tts|live|audio|veo|imagen|robotics|computer|native|aqa|vision)/.test(id));
+  const ver = id => parseFloat((id.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+  return ids.sort((a, b) => (/preview|exp/.test(a) - /preview|exp/.test(b)) || ver(b) - ver(a) || a.localeCompare(b));
+}
 async function openai(key, model, system, user, maxTokens) {
   const h = { 'Authorization': 'Bearer ' + key, 'content-type': 'application/json' };
   let res = await fetch('https://api.openai.com/v1/chat/completions', { method: 'POST', headers: h, body: JSON.stringify({ model, max_completion_tokens: maxTokens, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }) });
@@ -293,6 +318,10 @@ async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) 
     const model = tier === 'fast' ? (cfg.fastModel || 'claude-haiku-5-5') : (cfg.writeModel || 'claude-sonnet-5-5');
     return { text: await claude(cfg.anthropicKey, model, system, user, maxTokens), model };
   }
+  if (prov === 'gemini' && cfg.geminiKey) {
+    const model = tier === 'fast' ? (cfg.geminiFast || cfg.geminiWrite) : cfg.geminiWrite;
+    return { text: await gemini(cfg.geminiKey, model, system, user, maxTokens), model };
+  }
   if (prov === 'openai' && cfg.openaiKey) {
     const model = tier === 'fast' ? cfg.openaiFast : cfg.openaiWrite;
     return { text: await openai(cfg.openaiKey, model, system, user, Math.max(maxTokens, 4000)), model };
@@ -313,7 +342,7 @@ async function aiJson(env, system, user, opts) {
   let lastErr;
   for (let i = 0; i < 2; i++) {
     try { const r = await ai(env, system, user, opts); const arr = extractJson(r.text); if (Array.isArray(arr) && arr.length) return { arr, model: r.model }; lastErr = new Error('ИИ вернул не JSON'); }
-    catch (e) { lastErr = e; if (/^(Claude|ChatGPT):/.test(e.message || '')) break; }
+    catch (e) { lastErr = e; if (/^(Claude|ChatGPT|Gemini)/.test(e.message || '')) break; }
   }
   throw lastErr;
 }
@@ -545,7 +574,7 @@ export default {
         let followers = null;
         try { followers = (await th(cfg.token, `/${cfg.userId}/threads_insights`, { metric: 'followers_count' })).data?.[0]?.total_value?.value; } catch {}
         const c2 = await getCfg(env);
-        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError }, ai: { provider: providerOf(c2), writeModel: providerOf(c2) === 'openai' ? c2.openaiWrite : (c2.writeModel || 'claude-sonnet-5-5'), fastModel: providerOf(c2) === 'openai' ? c2.openaiFast : (c2.fastModel || 'claude-haiku-5-5'), hasClaude: !!c2.anthropicKey, hasOpenai: !!c2.openaiKey } });
+        return json(req, { me, followers, token: { refreshedAt: c2.tokenRefreshedAt, expiresAt: c2.tokenExpiresAt, refreshError: c2.refreshError }, ai: { provider: providerOf(c2), writeModel: { openai: c2.openaiWrite, gemini: c2.geminiWrite }[providerOf(c2)] || (c2.writeModel || 'claude-sonnet-5-5'), fastModel: { openai: c2.openaiFast, gemini: c2.geminiFast }[providerOf(c2)] || (c2.fastModel || 'claude-haiku-5-5'), hasGemini: !!c2.geminiKey, hasClaude: !!c2.anthropicKey, hasOpenai: !!c2.openaiKey } });
       }
       if (path === '/posts') return json(req, await fetchPosts(cfg, Math.min(+qs.limit || 40, 45), qs.after));
       if (path === '/insights') return json(req, await userInsights(cfg, qs.since, qs.until));
@@ -592,6 +621,11 @@ export default {
         if (p.sinceLearn >= 8) ctx.waitUntil(learn(env));
         return json(req, { ok: true, liked: p.liked.length, disliked: p.disliked.length });
       }
+      if (path === '/aimodels' && req.method === 'POST' && body.provider === 'gemini') {
+        const key = body.key || cfg.geminiKey;
+        if (!key) return json(req, { error: 'Нужен API-ключ Gemini' }, 400);
+        return json(req, { models: await geminiModels(key) });
+      }
       if (path === '/aimodels' && req.method === 'POST') {
         const key = body.key || cfg.openaiKey;
         if (!key) return json(req, { error: 'Нужен API-ключ OpenAI' }, 400);
@@ -606,6 +640,13 @@ export default {
           if (!key) return json(req, { error: 'Нужен API-ключ Anthropic' }, 400);
           if (body.key) await claude(body.key, fastModel, 'Відповідай одним словом.', 'Скажи "так".', 20);
           Object.assign(cfg, { provider: 'claude', writeModel, fastModel, anthropicKey: key });
+        }
+        if (prov === 'gemini') {
+          const key = body.key || cfg.geminiKey;
+          if (!key) return json(req, { error: 'Нужен API-ключ Gemini' }, 400);
+          if (!body.writeModel) return json(req, { error: 'Выбери модель' }, 400);
+          await gemini(key, body.fastModel || body.writeModel, 'Відповідай одним словом.', 'Скажи "так".', 50);
+          Object.assign(cfg, { provider: 'gemini', geminiKey: key, geminiWrite: body.writeModel, geminiFast: body.fastModel || body.writeModel });
         }
         if (prov === 'openai') {
           const key = body.key || cfg.openaiKey;

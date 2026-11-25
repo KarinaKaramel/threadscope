@@ -380,7 +380,7 @@ function genHtml() {
   </div>`;
 }
 function setupGen() {
-  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : m.provider === 'openai' ? `ИИ: ChatGPT (${m.writeModel})` : 'ИИ: бесплатный Workers AI') : '';
+  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'gemini' ? `ИИ: Gemini (${m.writeModel})` : m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : m.provider === 'openai' ? `ИИ: ChatGPT (${m.writeModel})` : 'ИИ: Cloudflare AI (бесплатный лимит)') : '';
   $('#gbtn').onclick = genDrafts;
   $('#gmode').onchange = e => { LS.set('gmode', e.target.value); $('#gstoryBox').hidden = e.target.value !== 'story'; $('#gmodeHint').textContent = GEN_MODE_HINT[e.target.value] || ''; if (e.target.value === 'story') $('#gcount').value = '5'; };
   $('#gstory').oninput = e => LS.set('gstory', e.target.value);
@@ -769,7 +769,7 @@ async function translateVisible() {
   const free = (S.me?.ai?.provider || 'workers-ai') === 'workers-ai';
   const need = baseFiltered().filter(i => S.tr[i.id]?.mech == null).sort((a, b) => pot(b) - pot(a)).slice(0, free ? 10 : 40);
   if (!need.length) { if ($('#wstat')) $('#wstat').textContent = ''; return; }
-  const per = S.me?.ai?.provider === 'claude' ? 5 : 2;
+  const prov = S.me?.ai?.provider; const per = prov === 'gemini' ? 6 : prov === 'claude' ? 5 : 2; const conc = prov === 'gemini' ? 2 : 6;
   const chunks = []; for (let k = 0; k < need.length; k += per) chunks.push(need.slice(k, k + per));
   let done = 0, failed = 0;
   const st = () => { if ($('#wstat')) $('#wstat').textContent = `Перевожу: ${done} из ${need.length}…`; };
@@ -785,7 +785,7 @@ async function translateVisible() {
     } catch (e) { failed++; if (/лимит/i.test(e.message || '')) S.aiLimit = e.message; }
     done += ch.length; st(); renderWorld();
   };
-  let next = 0; await Promise.all(Array.from({ length: 6 }, async () => { while (next < chunks.length) await run(chunks[next++]); }));
+  let next = 0; await Promise.all(Array.from({ length: conc }, async () => { while (next < chunks.length) await run(chunks[next++]); }));
   if ($('#wstat')) $('#wstat').textContent = S.aiLimit ? 'бесплатный лимит ИИ на сегодня исчерпан' : failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
   if (S.aiLimit) toast(S.aiLimit, 8000);
 }
@@ -962,20 +962,20 @@ function renderConnect() {
     <h2>ИИ на сайте</h2>
     <div class="grid two">
       <div class="card">
-        <div class="small" id="aistat">${(() => { const x = S.me?.ai; if (!x) return ''; return x.provider === 'claude' ? `✅ Работает <b>Claude</b>: пишет ${esc(x.writeModel)}, переводит ${esc(x.fastModel)}` : x.provider === 'openai' ? `✅ Работает <b>ChatGPT</b>: пишет ${esc(x.writeModel)}, переводит ${esc(x.fastModel)}` : 'Сейчас работает бесплатный <b>Workers AI</b> (слабее и медленнее).'; })()}</div>
+        <div class="small" id="aistat">${(() => { const x = S.me?.ai; if (!x) return ''; return x.provider === 'gemini' ? `✅ Работает <b>Gemini</b>: пишет ${esc(x.writeModel)}, переводит ${esc(x.fastModel)}` : x.provider === 'workers-ai' ? 'Сейчас работает бесплатный <b>Cloudflare AI</b> (10 000 «нейронов» в день, слабее по качеству).' : `Сейчас работает ${esc(x.provider)}`; })()}</div>
         <div class="chips" style="margin-top:10px" id="provChips">
-          <span class="chip" data-prov="claude">Claude</span><span class="chip" data-prov="openai">ChatGPT (OpenAI)</span><span class="chip" data-prov="workers-ai">Бесплатный</span>
+          <span class="chip" data-prov="gemini">Gemini (бесплатно, рекомендую)</span><span class="chip" data-prov="workers-ai">Cloudflare AI</span>
         </div>
         <div id="provForm"></div>
       </div>
       <div class="card">
-        <h3>Подписка и API — это разное</h3>
-        <p class="small">Подписку ChatGPT Plus или Claude Pro сайт использовать не может — так устроены сервисы. Есть два пути:</p>
+        <h3>Как получить ключ Gemini</h3>
         <ol class="steps small">
-          <li><b>Кнопки «в Claude» / «в ChatGPT»</b> по всему сайту — открывают чат с готовым заданием, работает по твоей подписке бесплатно, но ответ переносишь вручную.</li>
-          <li><b>API-ключ</b> — ИИ работает прямо на сайте (генератор, обучение, отбор трендов). Платится отдельно, центы за пачку черновиков. Claude: <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a> · OpenAI: <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a> (нужно пополнить баланс в Billing, от $5).</li>
+          <li>Открой <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a> (вход через Google).</li>
+          <li>Create API key → скопируй ключ и вставь слева.</li>
+          <li>Нажми «Загрузить модели» → «Включить Gemini».</li>
         </ol>
-        <p class="mut small">Ключи хранятся только в твоём Cloudflare Worker.</p>
+        <p class="mut small">Бесплатно и без карты: у Gemini есть лимиты запросов в минуту и в день, для постов их хватает. На бесплатном тарифе Google может использовать запросы для улучшения своих моделей. Ключ хранится только в твоём Cloudflare Worker. Подписки ChatGPT/Claude работают через кнопки «в ChatGPT» / «в Claude».</p>
       </div>
     </div>`;
   $('#csave').onclick = async () => {
@@ -986,43 +986,38 @@ function renderConnect() {
       await syncAll(); toast('Готово ✓'); location.hash = '#overview';
     } catch (e) { $('#cstat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; }
   };
-  const prov0 = S.me?.ai?.provider || 'claude';
+  const prov0 = S.me?.ai?.provider === 'workers-ai' ? 'workers-ai' : 'gemini';
   const showProv = prov => {
     $('#provChips').querySelectorAll('[data-prov]').forEach(c => c.classList.toggle('on', c.dataset.prov === prov));
     const x = S.me?.ai || {};
     const f = $('#provForm');
-    if (prov === 'claude') f.innerHTML = `
-      <label>Anthropic API key ${x.hasClaude ? '<span class="mut">(уже сохранён — оставь пустым, чтобы не менять)</span>' : ''}</label><input id="akey" type="password" placeholder="sk-ant-…" autocomplete="off">
-      <label>Модель для постов и ответов</label><select id="awrite"><option value="claude-sonnet-5-5">Claude Sonnet 5.5 — лучший баланс (рекомендую)</option><option value="claude-opus-5-5">Claude Opus 5.5 — самый умный, дороже</option><option value="claude-haiku-5-5">Claude Haiku 5.5 — самый дешёвый</option></select>
-      <label>Модель для оценки и перевода трендов</label><select id="afast"><option value="claude-haiku-5-5">Claude Haiku 5.5 (рекомендую)</option><option value="claude-sonnet-5-5">Claude Sonnet 5.5</option></select>
-      <div class="row" style="margin-top:14px"><button class="acc" id="asave">Включить Claude</button></div>`;
-    if (prov === 'openai') f.innerHTML = `
-      <label>OpenAI API key ${x.hasOpenai ? '<span class="mut">(уже сохранён — оставь пустым, чтобы не менять)</span>' : ''}</label><input id="akey" type="password" placeholder="sk-…" autocomplete="off">
-      <div class="row" style="margin-top:8px"><button class="ghost sm" id="aload">Загрузить доступные модели</button><span class="mut small" id="aloadst"></span></div>
+    if (prov === 'gemini') f.innerHTML = `
+      <label>Gemini API key ${x.hasGemini ? '<span class="mut">(уже сохранён — оставь пустым, чтобы не менять)</span>' : ''}</label><input id="akey" type="password" placeholder="вставь ключ из AI Studio" autocomplete="off">
+      <div class="row" style="margin-top:8px"><button class="ghost sm" id="aload">Загрузить модели</button><span class="mut small" id="aloadst"></span></div>
       <label>Модель для постов и ответов</label><select id="awrite"><option value="">— сначала загрузи модели —</option></select>
-      <label>Модель для оценки и перевода трендов (дешёвая)</label><select id="afast"><option value="">—</option></select>
-      <div class="row" style="margin-top:14px"><button class="acc" id="asave">Включить ChatGPT</button></div>`;
-    if (prov === 'workers-ai') f.innerHTML = `<p class="small mut" style="margin-top:10px">Бесплатно, без ключей, но пишет слабее и медленнее оценивает тренды.</p><div class="row"><button class="acc" id="asave">Включить бесплатный</button></div>`;
-    if (prov === 'claude' && x.provider === 'claude') { $('#awrite').value = x.writeModel; $('#afast').value = x.fastModel; }
+      <label>Модель для оценки и перевода трендов (полегче)</label><select id="afast"><option value="">—</option></select>
+      <div class="row" style="margin-top:14px"><button class="acc" id="asave">Включить Gemini</button></div>`;
+    if (prov === 'workers-ai') f.innerHTML = `<p class="small mut" style="margin-top:10px">Бесплатно, без ключей, но 10 000 «нейронов» в день (хватает на 1-2 сессии) и пишет слабее.</p><div class="row"><button class="acc" id="asave">Включить Cloudflare AI</button></div>`;
     const fill = (models, w, fa) => {
-      const pickW = w || models.find(mm => /sol/.test(mm)) || models.find(mm => /^gpt-[5-9]/.test(mm) && !/mini|nano|luna/.test(mm)) || models[0];
-      const pickF = fa || models.find(mm => /luna|mini/.test(mm)) || models[0];
+      const pickW = w || models.find(mm => /flash/.test(mm) && !/lite/.test(mm) && !/preview|exp/.test(mm)) || models.find(mm => /flash/.test(mm) && !/lite/.test(mm)) || models[0];
+      const pickF = fa || models.find(mm => /flash-lite/.test(mm) && !/preview|exp/.test(mm)) || models.find(mm => /lite/.test(mm)) || pickW;
       $('#awrite').innerHTML = models.map(mm => `<option ${mm === pickW ? 'selected' : ''}>${mm}</option>`).join('');
       $('#afast').innerHTML = models.map(mm => `<option ${mm === pickF ? 'selected' : ''}>${mm}</option>`).join('');
     };
-    if (prov === 'openai') {
+    if (prov === 'gemini') {
       $('#aload').onclick = async () => {
         $('#aloadst').textContent = 'Загружаю…';
-        try { const r = await api('/aimodels', { method: 'POST', body: { key: $('#akey').value.trim() } }); fill(r.models, x.provider === 'openai' ? x.writeModel : '', x.provider === 'openai' ? x.fastModel : ''); $('#aloadst').textContent = `${r.models.length} моделей`; }
+        try { const r = await api('/aimodels', { method: 'POST', body: { provider: 'gemini', key: $('#akey').value.trim() } }); fill(r.models, x.provider === 'gemini' ? x.writeModel : '', x.provider === 'gemini' ? x.fastModel : ''); $('#aloadst').textContent = `${r.models.length} моделей`; }
         catch (e) { $('#aloadst').textContent = e.message; }
       };
-      if (x.hasOpenai) $('#aload').click();
+      $('#akey').addEventListener('change', () => $('#akey').value.trim() && $('#aload').click());
+      if (x.hasGemini) $('#aload').click();
     }
     $('#asave').onclick = async () => {
       const b = $('#asave'), label = b.textContent; b.disabled = true; b.textContent = 'Проверяю…';
       try {
         const body = { provider: prov };
-        if (prov !== 'workers-ai') Object.assign(body, { key: $('#akey').value.trim(), writeModel: $('#awrite').value, fastModel: $('#afast').value });
+        if (prov === 'gemini') { if (!$('#awrite').value) { await $('#aload').onclick(); } Object.assign(body, { key: $('#akey').value.trim(), writeModel: $('#awrite').value, fastModel: $('#afast').value }); }
         await api('/aikey', { method: 'POST', body });
         S.me = await api('/me'); LS.set('me', S.me); toast('ИИ переключён ✓'); renderConnect();
       } catch (e) { $('#aistat').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span>`; b.disabled = false; b.textContent = label; }

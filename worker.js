@@ -271,7 +271,8 @@ async function gemini(key, model, system, user, maxTokens) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const res = await fetch(url, { method: 'POST', headers: { 'x-goog-api-key': key, 'content-type': 'application/json' }, body });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 429 && attempt < 2) { await sleep(6000 * (attempt + 1)); continue; }
+    if ((res.status === 429 || res.status === 503) && attempt < 2) { await sleep(4000 * (attempt + 1)); continue; }
+    if (res.status === 503) throw new ApiError('Gemini перегружен', 503);
     if (res.status === 429) throw new ApiError('Gemini: бесплатный лимит запросов на минуту/день исчерпан, подожди немного', 429);
     if (res.status === 400 && /API key/i.test(data.error?.message || '')) throw new ApiError('Gemini: неверный API-ключ', 400);
     if (!res.ok) throw new ApiError('Gemini: ' + (data.error?.message || 'HTTP ' + res.status), 502);
@@ -319,8 +320,14 @@ async function ai(env, system, user, { maxTokens = 3000, tier = 'write' } = {}) 
     return { text: await claude(cfg.anthropicKey, model, system, user, maxTokens), model };
   }
   if (prov === 'gemini' && cfg.geminiKey) {
-    const model = tier === 'fast' ? (cfg.geminiFast || cfg.geminiWrite) : cfg.geminiWrite;
-    return { text: await gemini(cfg.geminiKey, model, system, user, maxTokens), model };
+    const first = tier === 'fast' ? (cfg.geminiFast || cfg.geminiWrite) : cfg.geminiWrite;
+    const chain = [...new Set([first, cfg.geminiWrite, cfg.geminiFast].filter(Boolean))];
+    let lastErr;
+    for (const model of chain) {
+      try { return { text: await gemini(cfg.geminiKey, model, system, user, maxTokens), model }; }
+      catch (e) { lastErr = e; if (!/перегружен|503|high demand|лимит/i.test(e.message || '')) throw e; }
+    }
+    throw new ApiError('Gemini сейчас перегружен — попробуй через пару минут или нажми «в Claude»', 503);
   }
   if (prov === 'openai' && cfg.openaiKey) {
     const model = tier === 'fast' ? cfg.openaiFast : cfg.openaiWrite;

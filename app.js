@@ -364,39 +364,74 @@ S.perf = LS.get('perf', null);
 const REASONS = ['банально', 'не смешно', 'не мой стиль', 'слишком длинно', 'искусственный вопрос', 'суржик/кривой язык', 'уже было', 'не моя тема'];
 function genHtml() {
   return `<div class="card" style="margin-bottom:12px">
-    <div class="row"><h3 style="margin:0">Генератор черновиков</h3><span class="sp"></span><span class="mut small" id="aiProv"></span></div>
+    <div class="row"><h3 style="margin:0">Промпт для черновиков</h3><span class="sp"></span><span class="mut small">через твою подписку Claude / ChatGPT</span></div>
     <div class="row" style="margin-top:10px">
       <select id="gcount" style="width:auto">${[5, 10, 15].map(n => `<option ${n == LS.get('gcount', 10) ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <select id="gmode" style="width:auto">${GEN_MODE_LIST.map(([v, l]) => `<option value="${v}" ${v === LS.get('gmode', '') ? 'selected' : ''}>${l}</option>`).join('')}</select>
       <select id="gtopic" style="width:auto"><option value="">любые темы</option>${TOPIC_TAGS.map(t => `<option>${t}</option>`).join('')}</select>
       <input id="ghint" placeholder="пожелание: например «про понедельник», «больше колкости», «про чорну п'ятницю»" style="flex:1;min-width:200px">
-      <button class="acc" id="gbtn">✨ Сгенерировать</button><button class="ghost sm" id="gask">в Claude</button>${GPT()}
     </div>
     <div id="gstoryBox" ${LS.get('gmode', '') === 'story' ? '' : 'hidden'} style="margin-top:8px"><textarea id="gstory" style="min-height:90px" placeholder="опиши реальную ситуацию из своей жизни: что было, кто что сказал, чем закончилось. ИИ найдёт поворот и сделает из неё хуки — ничего не выдумывая">${esc(LS.get('gstory', ''))}</textarea></div>
     <p class="mut small" id="gmodeHint" style="margin:8px 0 0">${GEN_MODE_HINT[LS.get('gmode', '')] || ''}</p>
-    <p class="mut small" style="margin:8px 0 0">Оценивай: 👍 — в черновики, 👎 — с причиной. ИИ учитывает твои оценки и лучшие посты по статистике, а каждые 8 оценок сам обновляет правила твоего вкуса.</p>
+    <div class="row" style="margin-top:10px">
+      <button class="acc" id="gcopy">📋 Копировать промпт</button>
+      <button class="ghost" id="gask">Открыть в Claude</button>${GPT('ghost')}
+    </div>
+    <p class="mut small" style="margin:8px 0 0">В промпт уже входят: выбранная механика, твои лучшие посты по статистике, что залетело и что нет, недавние посты (чтобы не повторяться), твои правила и выводы из оценок.</p>
+    <details style="margin-top:12px" id="pasteBox"><summary>Вставить ответ Claude/ChatGPT → оценить</summary>
+      <textarea id="gpaste" style="min-height:120px;margin-top:8px" placeholder="вставь сюда весь ответ — посты разделятся по строкам ---"></textarea>
+      <div class="row" style="margin-top:6px"><button class="sm" id="gparse">Разобрать в черновики</button><span class="mut small">потом 👍/👎 — так сайт учит твой вкус</span></div>
+    </details>
     <div id="glist" style="margin-top:6px"></div>
     <details style="margin-top:12px" id="learnBox"><summary>Чему ИИ научился</summary><div id="learnBody" class="small" style="margin-top:8px">Загрузка…</div></details>
   </div>`;
 }
+async function genPrompt(target) {
+  let p = {}; try { p = await api('/prefs'); } catch {}
+  const ps = rootPosts().filter(x => x.metrics && m(x).views >= 20);
+  const best = [...ps].sort((x, y) => (m(y).er || 0) - (m(x).er || 0)).slice(0, 5).map(x => `* "${(x.text || '').replace(/\n/g, ' / ')}" (просмотры ${m(x).views}, ответы ${m(x).replies}, ER ${pct(m(x).er)})`).join('\n');
+  const recent = byDate(rootPosts()).slice(0, 10).map(x => '* ' + (x.text || '').replace(/\n/g, ' / ')).join('\n');
+  const flops = S.perf?.ready && S.perf.flops.length ? S.perf.flops.slice(0, 4).map(f => `* "${f.text.replace(/\n/g, ' / ')}" (ER ${pct(f.er)})`).join('\n') : '';
+  const gm = $('#gmode').value, MODE_RU = { recognize: 'Механика «узнай себя»: конкретные бытовые ситуации моей аудитории её же мыслями и формулировками, чтобы хотелось написать «это же про меня». Без общих слов и мотивации.', unspoken: 'Механика «невысказанная мысль»: то, что аудитория давно чувствует, но редко говорит вслух; коротко, дерзко, через неожиданное сравнение, чтобы хотелось переслать другу.', debate: 'Механика «спорный тезис»: перевёрнутое популярное убеждение, с которым хочется поспорить, но через иронию, без коучинга и искусственных скандалов.', story: 'Механика «моя история»: найди в моей реальной ситуации самый неожиданный поворот, конфликт или ошибку и сделай мини-истории с интригой с первой строки. Не выдумывай событий, деталей и цифр.\nМоя ситуация: ' + $('#gstory').value.trim() };
+  let text = `Напиши ${$('#gcount').value} разных черновиков постов для моего украинского Threads${$('#gtopic').value ? ' на тему ' + $('#gtopic').value : ''} (скилл threads-posts).${MODE_RU[gm] ? '\n' + MODE_RU[gm] : ''}${$('#ghint').value.trim() ? '\nПожелание: ' + $('#ghint').value.trim() : ''}\n\nМои лучшие посты по статистике (ориентируйся на них):\n${best || '—'}${flops ? '\n\nНе зашли (избегай такого):\n' + flops : ''}\n\nНедавние (не повторяй):\n${recent || '—'}${p.manual ? '\n\nМои правила:\n' + p.manual : ''}${p.notes ? '\n\nЧто я люблю/не люблю (по моим оценкам):\n' + p.notes : ''}\n\nКаждый пост: до 280 символов, крючок в первой строке, в конце конкретный повод ответить. Формат ответа строго такой — посты разделены строкой ---, без нумерации:\nтекст поста\nТема: одна тема из [психологія, стосунки, айті, робота, гроші, гумор, життя, соцмережі, штучний інтелект]\nПочему: одна строка, почему захотят ответить\n---`;
+  if (target === 'chatgpt') text = text.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT;
+  return text;
+}
+function parsePasted(raw) {
+  const blocks = raw.split(/^\s*[-*_—]{3,}\s*$/m).map(s => s.trim()).filter(Boolean);
+  return blocks.map(b => {
+    let tag = '', why = '';
+    const lines = b.split('\n').filter(l => {
+      const t = l.match(/^\s*\**\s*(тема|topic|topic tag)\s*\**\s*[:：]\s*(.+)$/i); if (t) { tag = t[2].replace(/[*"«»]/g, '').trim().toLowerCase(); return false; }
+      const w = l.match(/^\s*\**\s*(почему|чому|why)\s*\**\s*[:：]\s*(.+)$/i); if (w) { why = w[2].trim(); return false; }
+      return true;
+    });
+    while (lines.length && (/^\s*$/.test(lines[0]) || (/[:：]\s*$/.test(lines[0]) && lines[0].length < 80))) lines.shift();
+    const text = lines.join('\n').replace(/^\s*(\d+[.)]|[-•*]|#+)\s+/, '').replace(/\*\*/g, '').replace(/^["«]|["»]$/g, '').trim();
+    return { text: localFix(text), topic_tag: TOPIC_TAGS.includes(tag) ? tag : '', why, score: null };
+  }).filter(d => d.text.length >= 15 && !/^(вот|ось|here)\b.*:$/i.test(d.text));
+}
 function setupGen() {
-  const m = S.me?.ai; $('#aiProv').textContent = m ? (m.provider === 'gemini' ? `ИИ: Gemini (${m.writeModel})` : m.provider === 'claude' ? `ИИ: Claude (${m.writeModel})` : m.provider === 'openai' ? `ИИ: ChatGPT (${m.writeModel})` : 'ИИ: Cloudflare AI (бесплатный лимит)') : '';
-  $('#gbtn').onclick = genDrafts;
   $('#gmode').onchange = e => { LS.set('gmode', e.target.value); $('#gstoryBox').hidden = e.target.value !== 'story'; $('#gmodeHint').textContent = GEN_MODE_HINT[e.target.value] || ''; if (e.target.value === 'story') $('#gcount').value = '5'; };
   $('#gstory').oninput = e => LS.set('gstory', e.target.value);
+  $('#gcopy').onclick = async () => {
+    if ($('#gmode').value === 'story' && $('#gstory').value.trim().length < 30) return toast('Опиши свою ситуацию хотя бы в паре предложений');
+    copy(await genPrompt('claude'), 'Промпт скопирован — вставь в Claude, ответ потом вставь сюда для оценки');
+  };
   $('#gask').onclick = async () => {
     const target = S.nextTarget || 'claude'; S.nextTarget = null;
     const w = window.open('about:blank', '_blank');
-    let p = {}; try { p = await api('/prefs'); } catch {}
-    const ps = rootPosts().filter(x => x.metrics && m(x).views >= 20);
-    const best = [...ps].sort((x, y) => (m(y).er || 0) - (m(x).er || 0)).slice(0, 5).map(x => `* "${(x.text || '').replace(/\n/g, ' / ')}" (просмотры ${m(x).views}, ответы ${m(x).replies}, ER ${pct(m(x).er)})`).join('\n');
-    const recent = byDate(rootPosts()).slice(0, 10).map(x => '* ' + (x.text || '').replace(/\n/g, ' / ')).join('\n');
-    const gm = $('#gmode').value, MODE_RU = { recognize: 'Механика «узнай себя»: конкретные бытовые ситуации моей аудитории её же мыслями и формулировками, чтобы хотелось написать «это же про меня». Без общих слов и мотивации.', unspoken: 'Механика «невысказанная мысль»: то, что аудитория давно чувствует, но редко говорит вслух; коротко, дерзко, через неожиданное сравнение, чтобы хотелось переслать другу.', debate: 'Механика «спорный тезис»: перевёрнутое популярное убеждение, с которым хочется поспорить, но через иронию, без коучинга и искусственных скандалов.', story: 'Механика «моя история»: найди в моей реальной ситуации самый неожиданный поворот, конфликт или ошибку и сделай мини-истории с интригой с первой строки. Не выдумывай событий, деталей и цифр.\nМоя ситуация: ' + $('#gstory').value.trim() };
-    let text = `Напиши ${$('#gcount').value} разных черновиков постов для моего украинского Threads${$('#gtopic').value ? ' на тему ' + $('#gtopic').value : ''} (скилл threads-posts).${MODE_RU[gm] ? '\n' + MODE_RU[gm] : ''}${$('#ghint').value.trim() ? '\nПожелание: ' + $('#ghint').value.trim() : ''}\n\nМои лучшие посты:\n${best || '—'}\n\nНедавние (не повторяй):\n${recent || '—'}${p.manual ? '\n\nМои правила:\n' + p.manual : ''}${p.notes ? '\n\nЧто я люблю/не люблю (по моим оценкам):\n' + p.notes : ''}\n\nДля каждого: текст, одна тема (topic tag), одна строка почему захотят ответить.`;
-    if (target === 'chatgpt') text = text.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT;
+    const text = await genPrompt(target);
     const base = target === 'chatgpt' ? 'https://chatgpt.com/' : 'https://claude.ai/new';
     if (w) w.location = text.length < 6000 ? base + '?q=' + encodeURIComponent(text) : base;
-    copy(text, 'Задание скопировано — понравившиеся посты вставляй в редактор Студии');
+    copy(text, 'Открываю и копирую промпт — ответ потом вставь сюда для оценки');
+    $('#pasteBox').open = true;
+  };
+  $('#gparse').onclick = () => {
+    const ds = parsePasted($('#gpaste').value);
+    if (!ds.length) return toast('Не нашла постов — проверь, что вставлен ответ целиком');
+    S.gen = [...ds.map(d => ({ ...d, id: Date.now() + Math.random(), state: 'new' })), ...S.gen.filter(g => g.state === 'new')].slice(0, 40);
+    LS.set('gen', S.gen); $('#gpaste').value = ''; renderGenList(); toast(`Разобрала: ${ds.length} черновиков — оцени их`);
   };
   $('#gcount').onchange = e => LS.set('gcount', +e.target.value);
   $('#learnBox').ontoggle = e => e.target.open && loadLearn();
@@ -436,7 +471,7 @@ function renderGenList() {
       </div>
       <div class="chips reasons" hidden style="margin-top:6px">${REASONS.map(r => `<span class="chip" data-r="${r}">${r}</span>`).join('')}<span class="chip" data-r="">просто нет</span></div>
     </div>`;
-  }).join('') : '<p class="mut small">Нажми «Сгенерировать» — появятся черновики для оценки.</p>';
+  }).join('') : '<p class="mut small">Скопируй промпт → вставь в Claude → его ответ вставь в «Вставить ответ» выше, и черновики появятся здесь для 👍/👎.</p>';
   box.querySelectorAll('.gitem').forEach(el => {
     const g = S.gen.find(x => x.id == el.dataset.g);
     const text = () => el.querySelector('.gtext').value.trim();

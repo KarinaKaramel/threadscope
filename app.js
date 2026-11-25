@@ -622,7 +622,7 @@ function renderTrends() {
   const W = wcfg();
   const num = (id, label, vals, cur) => `<label class="flt"><span>${label}</span><select id="${id}">${vals.map(v => `<option value="${v[0] ?? v}" ${String(v[0] ?? v) === String(cur) ? 'selected' : ''}>${v[1] ?? v}</option>`).join('')}</select></label>`;
   $('#trends').innerHTML = `
-    <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><span id="wstat" class="mut small"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button></div>
+    <div class="row"><h2>Залетело в мире</h2><span class="sp"></span><span id="wstat" class="mut small"></span><button class="ghost sm" id="wgo">↻ Найти свежее</button><button class="ghost sm" id="woff" title="Скрыть вкладку и не тратить лимит ИИ">Выключить вкладку</button></div>
     <p class="mut small" style="margin-top:-6px">Посты обычных людей из Bluesky и Mastodon, которые собрали много реакций. ИИ оценивает, есть ли у них шанс залететь в рекомендации украинского Threads (понятно ли без контекста страны, захочется ли ответить, свежо ли), отсеивает локальное и переписывает лучшие по-нашему. Threads не отдаёт лайки чужих постов через API, поэтому ищем в соседних текстовых соцсетях.</p>
     <div class="card">
       <div class="fgrid">
@@ -669,6 +669,7 @@ function renderTrends() {
   $('#trends').querySelectorAll('.fgrid select, #f_bs, #f_ms, #f_clean, #f_nolocal').forEach(el => el.onchange = save);
   $('#f_topics').querySelectorAll('[data-topic]').forEach(ch => ch.onclick = () => { const c = wcfg(); const t = ch.dataset.topic; c.topics = c.topics.includes(t) ? c.topics.filter(x => x !== t) : [...c.topics, t]; LS.set('worldCfg3', c); ch.classList.toggle('on'); renderWorld(); });
   $('#wgo').onclick = () => loadWorld(true);
+  $('#woff').onclick = () => { S.worldStop = true; LS.set('trendsOn', false); toast('Вкладка «Тренды» выключена — включить можно в «Подключении»', 5000); renderAll(); };
   renderWorld();
   if (!S.world || Date.now() - LS.get('worldAt', 0) > 3 * 3600e3) loadWorld(); else translateVisible();
 }
@@ -785,7 +786,7 @@ async function translateVisible() {
     } catch (e) { failed++; if (/лимит/i.test(e.message || '')) S.aiLimit = e.message; }
     done += ch.length; st(); renderWorld();
   };
-  let next = 0; await Promise.all(Array.from({ length: conc }, async () => { while (next < chunks.length) await run(chunks[next++]); }));
+  S.worldStop = false; let next = 0; await Promise.all(Array.from({ length: conc }, async () => { while (next < chunks.length && !S.worldStop && LS.get('trendsOn', true) && location.hash === '#trends') await run(chunks[next++]); }));
   if ($('#wstat')) $('#wstat').textContent = S.aiLimit ? 'бесплатный лимит ИИ на сегодня исчерпан' : failed ? `часть не перевелась (${failed}) — нажми «Найти свежее» ещё раз` : '';
   if (S.aiLimit) toast(S.aiLimit, 8000);
 }
@@ -959,6 +960,9 @@ function renderConnect() {
         <p class="mut small">Токен хранится только в твоём Cloudflare Worker, не на этом сайте и не на GitHub. Ключ доступа хранится в этом браузере — на телефоне введи его один раз.</p>
       </div>
     </div>
+    <h2>Вкладки</h2>
+    <div class="card"><label class="chk" style="font-size:14px"><input type="checkbox" id="trendsOn" ${LS.get('trendsOn', true) ? 'checked' : ''}> Вкладка «Тренды» — поиск залетевших постов в мире с переводом через ИИ</label>
+      <p class="mut small" style="margin:6px 0 0">Если выключить, вкладка пропадёт и ИИ не будет тратить лимит на перевод и оценку трендов. Включить обратно можно здесь же.</p></div>
     <h2>ИИ на сайте</h2>
     <div class="grid two">
       <div class="card">
@@ -978,6 +982,7 @@ function renderConnect() {
         <p class="mut small">Бесплатно и без карты: у Gemini есть лимиты запросов в минуту и в день, для постов их хватает. На бесплатном тарифе Google может использовать запросы для улучшения своих моделей. Ключ хранится только в твоём Cloudflare Worker. Подписки ChatGPT/Claude работают через кнопки «в ChatGPT» / «в Claude».</p>
       </div>
     </div>`;
+  $('#trendsOn').onchange = e => { LS.set('trendsOn', e.target.checked); renderAll(); toast(e.target.checked ? 'Вкладка «Тренды» включена' : 'Вкладка «Тренды» выключена'); };
   $('#csave').onclick = async () => {
     S.worker = $('#cw').value.trim(); S.key = $('#ck').value; LS.set('worker', S.worker); LS.set('key', S.key);
     const token = $('#ct').value.trim();
@@ -1052,6 +1057,9 @@ async function syncAll() {
 }
 function renderAll() {
   $('#who').textContent = S.me ? `@${S.me.me?.username} · ${fmt(S.me.followers)} подписчиков` : 'не подключено';
+  const trendsOn = LS.get('trendsOn', true);
+  const tl = document.querySelector('#tabs a[data-tab="trends"]'); if (tl) tl.hidden = !trendsOn;
+  if (!trendsOn && location.hash === '#trends') { location.hash = '#overview'; return; }
   const tab = (location.hash || '#overview').slice(1);
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === tab));
   document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));

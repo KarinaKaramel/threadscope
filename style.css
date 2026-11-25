@@ -100,3 +100,4 @@ code{background:var(--soft);padding:1px 6px;border-radius:6px;font-size:13px}
 .ua .t{font-size:15px}
 .gitem{padding:12px 0;border-bottom:1px solid var(--line)}.gitem:last-child{border:0}
 .gitem textarea{min-height:70px;font-size:15px}
+[hidden]{display:none!important}

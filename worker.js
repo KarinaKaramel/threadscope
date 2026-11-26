@@ -488,6 +488,25 @@ async function improve(env, { text, hint = '', tag = '', fix = null }) {
   return { model, variants: arr.map(x => ({ text: strOf(x.text ?? x), note: fixTypo(x.note || '') })).filter(v => v.text).slice(0, 3) };
 }
 
+
+const COMMENT_MECH = `Механіки коментарів, які збирають лайки і гілки:
+1. неочевидний твіст - перевертає думку автора несподіваним, але точним кутом;
+2. "доповню список" - той самий пункт, якого бракує, найточніший або найсмішніший;
+3. точна деталь із життя - конкретика, в якій кожен впізнає себе;
+4. самоіронічне зізнання - "я та людина, яка...";
+5. переклад на людську - одним рядком іронічно підсумувати суть;
+6. розумне "але" - м'яка незгода з нюансом, з якою хочеться посперечатися.
+Правила: 1-2 речення, до 160 символів; коментар має бути зрозумілий і смішний/влучний навіть без поста (його бачать у стрічці окремо); ніякого "згодна", "так і є", "дуже влучно", ніяких емодзі-гірлянд, ніякої самореклами, не принижувати автора; на болючі теми (депресія, втрата, війна) - без жартів, тепло і по-людськи.`;
+async function comment(env, { text, author = '', hint = '' }) {
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), true);
+  const user = `Чужий пост${author ? ' від @' + author : ''} у Threads:\n"${text}"\n${hint ? 'Побажання Карини: ' + hint + '\n' : ''}
+${COMMENT_MECH}
+Напиши 5 різних коментарів від Карини, кожен за іншою механікою, щоб під ним ставили лайки і відповідали, а люди хотіли відкрити її профіль.
+Поверни ТІЛЬКИ JSON-масив з 5 об'єктів {"text": коментар, "mech": назва механіки з 3-4 слів}.`;
+  const { arr, model } = await aiJson(env, BASE_STYLE + prefsBlock(p, 'comment') + perfTxt, user, { maxTokens: 2500 });
+  return { model, variants: arr.map(x => ({ text: strOf(x.text ?? x), mech: fixTypo(x.mech || '') })).filter(v => v.text).slice(0, 5) };
+}
+
 async function translate(env, items) {
   const list = items.slice(0, 8).map(i => ({ id: i.id, text: String(i.text || '').slice(0, 700), likes: i.likes, replies: i.replies, media: !!i.media }));
   const sys = `Ти редактор українського Threads і перекладач. Відбираєш зарубіжні пости, які можуть залетіти в РЕКОМЕНДАЦІЇ українського Threads, і переписуєш їх по-нашому.
@@ -614,6 +633,7 @@ export default {
       if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
       if (path === '/perf' && req.method === 'POST') return json(req, await savePerf(env, body.posts || []));
       if (path === '/perf' && req.method === 'GET') return json(req, (await getPerf(env)) || { ready: false });
+      if (path === '/comment' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Вставь текст поста' }, 400); return json(req, await comment(env, body)); }
       if (path === '/generate' && req.method === 'POST') return json(req, await generate(env, body));
       if (path === '/prefs' && req.method === 'GET') { const p = await getPrefs(env); return json(req, { liked: p.liked.length, disliked: p.disliked.length, notes: p.notes, manual: p.manual, learnedAt: p.learnedAt || null }); }
       if (path === '/prefs' && req.method === 'POST') { const p = await getPrefs(env); p.manual = String(body.manual || '').slice(0, 3000); await putPrefs(env, p); return json(req, { ok: true }); }
@@ -621,7 +641,7 @@ export default {
       if (path === '/feedback' && req.method === 'POST') {
         if (!body.text?.trim()) return json(req, { error: 'Нет текста' }, 400);
         const p = await getPrefs(env);
-        const item = { text: String(body.text).slice(0, 600), kind: body.kind === 'reply' ? 'reply' : 'post', reasons: (body.reasons || []).slice(0, 5), at: new Date().toISOString() };
+        const item = { text: String(body.text).slice(0, 600), kind: ['reply', 'comment'].includes(body.kind) ? body.kind : 'post', reasons: (body.reasons || []).slice(0, 5), at: new Date().toISOString() };
         const key = body.verdict === 'ok' ? 'liked' : 'disliked';
         p[key] = [...p[key].filter(x => x.text !== item.text), item].slice(-80);
         p.sinceLearn = (p.sinceLearn || 0) + 1;

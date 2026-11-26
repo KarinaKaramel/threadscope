@@ -976,6 +976,56 @@ async function refreshInbox() {
   if ((location.hash || '').slice(1) === 'replies') renderReplies();
 }
 
+
+// ---------- Комментирую (ответы в чужих ветках) ----------
+const COMMENT_MECH_RU = `Механики комментариев, которые собирают лайки и ветки:
+1. неочевидный твист — переворачивает мысль автора неожиданным, но точным углом;
+2. «дополню список» — тот самый недостающий пункт, самый точный или смешной;
+3. точная деталь из жизни — конкретика, в которой каждый узнаёт себя;
+4. самоироничное признание — «я тот человек, который…»;
+5. перевод на человеческий — одной строкой иронично подытожить суть;
+6. умное «но» — мягкое несогласие с нюансом, с которым хочется поспорить.
+Правила: 1-2 предложения, до 160 символов, на украинском, со строчной; коммент должен быть понятен и смешон/точен даже без поста; никаких «згодна», «так і є», эмодзи-гирлянд, саморекламы; не унижать автора; на болезненные темы — без шуток, тепло.`;
+function renderComment() {
+  const d = LS.get('cdraft', { text: '', author: '', hint: '' });
+  $('#comment').innerHTML = `
+    <h2>Комментирую чужие ветки</h2>
+    <p class="mut small" style="margin-top:-6px">Самый быстрый рост для маленького аккаунта — 10-15 цепких комментов в день под свежими (до часа) постами аккаунтов крупнее тебя. Вставь текст поста — получишь 5 вариантов разных механик. Публикуешь сама.</p>
+    <div class="grid two">
+      <div class="card">
+        <label>Текст чужого поста</label><textarea id="ctext" style="min-height:130px" placeholder="скопируй текст поста из Threads">${esc(d.text)}</textarea>
+        <div class="row" style="margin-top:8px"><input id="cauthor" placeholder="@автор (необязательно)" value="${esc(d.author)}" style="flex:1;min-width:140px"><input id="chint" placeholder="пожелание: колко, тепло, про IT…" value="${esc(d.hint)}" style="flex:2;min-width:180px"></div>
+        <div class="row" style="margin-top:10px"><button class="acc" id="cgo">✨ 5 вариантов</button><button class="ghost" id="cask">в Claude</button>${GPT('ghost')}<button class="ghost sm" id="ccopy">📋 Копировать промпт</button></div>
+        <div class="variants" id="cout" style="margin-top:10px"></div>
+      </div>
+      <div class="card"><h3>Что делает коммент цепким</h3><ul class="recs small">
+        <li><b>Неочевидный твист</b><span class="mut">переверни мысль автора под углом, о котором никто не подумал</span></li>
+        <li><b>Недостающий пункт</b><span class="mut">под постом-списком — тот самый пункт, которого не хватало</span></li>
+        <li><b>Точная деталь</b><span class="mut">конкретика, в которой все узнают себя («о 23:47», «третій раз за тиждень»)</span></li>
+        <li><b>Самоирония</b><span class="mut">«я та людина, яка…» — лайкают и отвечают «я теж»</span></li>
+        <li><b>Перевод на людську</b><span class="mut">одна строка, подытоживающая суть иронично</span></li>
+        <li><b>Умное «але»</b><span class="mut">несогласие с нюансом — запускает ветку</span></li>
+        <li><b>Когда</b><span class="mut">в первый час после поста и в первых 5-10 комментах — их видят все</span></li>
+      </ul></div>
+    </div>`;
+  const save = () => LS.set('cdraft', { text: $('#ctext').value, author: $('#cauthor').value, hint: $('#chint').value });
+  ['#ctext', '#cauthor', '#chint'].forEach(s => $(s).oninput = save);
+  const prompt = target => { let t = `Напиши 5 разных комментариев от моего имени под чужим постом в Threads (скилл threads-posts), каждый — по своей механике, чтобы под ним лайкали и отвечали, а люди хотели открыть мой профиль.\n\nПост${$('#cauthor').value.trim() ? ' от ' + $('#cauthor').value.trim() : ''}:\n"${$('#ctext').value.trim()}"${$('#chint').value.trim() ? '\nПожелание: ' + $('#chint').value.trim() : ''}\n\n${COMMENT_MECH_RU}\n\nФормат: комментарий, под ним строка «Механика: …», между комментариями строка ---`; if (target === 'chatgpt') t = t.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT; return t; };
+  $('#ccopy').onclick = () => { if (!$('#ctext').value.trim()) return toast('Вставь текст поста'); copy(prompt('claude'), 'Промпт скопирован'); };
+  $('#cask').onclick = () => { if (!$('#ctext').value.trim()) return toast('Вставь текст поста'); askAI(prompt(S.nextTarget || 'claude')); };
+  $('#cgo').onclick = async () => {
+    const text = $('#ctext').value.trim(); if (!text) return toast('Вставь текст поста');
+    const b = $('#cgo'); b.disabled = true; b.textContent = 'Думаю…'; $('#cout').innerHTML = '';
+    try {
+      const r = await api('/comment', { method: 'POST', body: { text, author: $('#cauthor').value.trim().replace(/^@/, ''), hint: $('#chint').value.trim() } });
+      $('#cout').innerHTML = r.variants.map((v, k) => `<div class="variant"><div style="flex:1"><textarea>${esc(v.text)}</textarea><div class="small mut">${esc(v.mech)}</div></div><div class="acts"><button class="sm" data-ccp="${k}">Копия</button><button class="ghost sm" data-cno="${k}">👎</button></div></div>`).join('');
+      $('#cout').querySelectorAll('[data-ccp]').forEach(x => x.onclick = () => { const v = x.closest('.variant').querySelector('textarea').value.trim(); copy(v, 'Скопировано — вставь в ответ в Threads'); feedback(v, 'ok', [], 'comment'); });
+      $('#cout').querySelectorAll('[data-cno]').forEach(x => x.onclick = () => { feedback(x.closest('.variant').querySelector('textarea').value.trim(), 'no', [], 'comment'); x.closest('.variant').style.opacity = .35; });
+    } catch (e) { $('#cout').innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)} — нажми «в Claude»</p>`; }
+    finally { b.disabled = false; b.textContent = '✨ Ещё 5'; }
+  };
+}
+
 // ---------- Подключение ----------
 function renderConnect() {
   const t = S.me?.token;
@@ -1104,11 +1154,11 @@ function renderAll() {
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === tab));
   document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   updateBadge();
-  ({ overview: renderOverview, posts: renderPosts, replies: renderReplies, studio: renderStudio, trends: renderTrends, connect: renderConnect }[tab] || renderOverview)();
+  ({ overview: renderOverview, posts: renderPosts, replies: renderReplies, comment: renderComment, studio: renderStudio, trends: renderTrends, connect: renderConnect }[tab] || renderOverview)();
 }
 window.addEventListener('hashchange', renderAll);
 $('#refreshBtn').onclick = () => syncAll().then(() => toast('Обновлено')).catch(e => toast(e.message, 5000));
-if (!['#overview', '#posts', '#replies', '#studio', '#trends', '#connect'].includes(location.hash)) location.hash = S.key ? '#overview' : '#connect';
+if (!['#overview', '#posts', '#replies', '#comment', '#studio', '#trends', '#connect'].includes(location.hash)) location.hash = S.key ? '#overview' : '#connect';
 renderAll();
 if (S.key && Date.now() - LS.get('syncedAt', 0) > 10 * 60e3) syncAll().catch(e => toast(e.message, 5000));
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

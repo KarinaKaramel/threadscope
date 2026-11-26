@@ -458,6 +458,7 @@ function setupGen() {
   $('#gcount').onchange = e => LS.set('gcount', +e.target.value);
   $('#learnBox').ontoggle = e => e.target.open && loadLearn();
   renderGenList();
+  pullServerDrafts();
 }
 async function genDrafts() {
   const b = $('#gbtn'); b.disabled = true; b.textContent = 'Пишу черновики…';
@@ -473,6 +474,17 @@ async function genDrafts() {
   } catch (e) { toast('Генерация: ' + e.message, 6000); }
   finally { b.disabled = false; b.textContent = '✨ Сгенерировать'; }
 }
+async function pullServerDrafts() {
+  try {
+    const q = await api('/gqueue');
+    let added = 0;
+    for (const d of q) if (!S.gen.some(g => g.serverId === d.id || g.text === d.text)) { S.gen.unshift({ id: Date.now() + Math.random(), serverId: d.id, text: d.text, topic_tag: d.topic_tag, why: [d.mech, d.why].filter(Boolean).join(' · '), score: null, state: 'new', fromClaude: true }); added++; }
+    const ids = new Set(q.map(d => d.id));
+    S.gen = S.gen.filter(g => !g.serverId || ids.has(g.serverId) || g.state !== 'new');
+    LS.set('gen', S.gen); renderGenList();
+    if (added) toast(`Claude подготовил ${added} черновиков — оцени их в Студии`);
+  } catch {}
+}
 function renderGenList() {
   const box = $('#glist'); if (!box) return;
   const list = S.gen.filter(g => g.state === 'new');
@@ -484,7 +496,7 @@ function renderGenList() {
         ${g.topic_tag ? `<span class="pill">${esc(g.topic_tag)}</span>` : ''}
         <span class="pill ${a.score >= 80 ? 'ok' : a.score >= 60 ? '' : 'warn'}" title="${esc(a.checks.filter(c => !c.ok).map(c => c.title).join('; ') || 'все проверки пройдены')}">алгоритм ${a.score}</span>
         ${g.score ? `<span class="pill" title="прогноз ИИ">прогноз ${g.score}/10</span>` : ''}
-        <span class="mut">${esc(g.why || '')}</span>
+        ${g.fromClaude ? '<span class="pill lang">от Claude по расписанию</span>' : ''}<span class="mut">${esc(g.why || '')}</span>
       </div>
       <div class="row" style="margin-top:6px">
         <button class="sm" data-ok>👍 Ок</button>
@@ -497,7 +509,7 @@ function renderGenList() {
   box.querySelectorAll('.gitem').forEach(el => {
     const g = S.gen.find(x => x.id == el.dataset.g);
     const text = () => el.querySelector('.gtext').value.trim();
-    const done = st => { g.state = st; LS.set('gen', S.gen); el.style.opacity = .35; setTimeout(renderGenList, 250); };
+    const done = st => { g.state = st; LS.set('gen', S.gen); if (g.serverId) api('/gqueue/done', { method: 'POST', body: { id: g.serverId } }).catch(() => {}); el.style.opacity = .35; setTimeout(renderGenList, 250); };
     el.querySelector('[data-ok]').onclick = () => { addDraft(text(), g.topic_tag); feedback(text(), 'ok', []); done('ok'); };
     el.querySelector('[data-no]').onclick = () => { el.querySelector('.reasons').hidden = false; };
     el.querySelectorAll('[data-r]').forEach(c => c.onclick = () => { feedback(text(), 'no', c.dataset.r ? [c.dataset.r] : []); done('no'); });

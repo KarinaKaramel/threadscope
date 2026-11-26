@@ -633,6 +633,20 @@ export default {
       if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
       if (path === '/perf' && req.method === 'POST') return json(req, await savePerf(env, body.posts || []));
       if (path === '/perf' && req.method === 'GET') return json(req, (await getPerf(env)) || { ready: false });
+      if (path === '/gqueue' && req.method === 'GET') return json(req, ((await env.TS.get('gqueue', 'json')) || []).filter(x => !x.done));
+      if (path === '/gqueue' && req.method === 'POST') {
+        const q = (await env.TS.get('gqueue', 'json')) || [];
+        const add = (body.items || []).filter(i => i.text && !q.some(x => x.text === i.text)).map(i => ({ id: crypto.randomUUID(), text: String(i.text).slice(0, 600), topic_tag: i.topic_tag || '', why: i.why || '', mech: i.mech || '', addedAt: new Date().toISOString(), done: false }));
+        const next = [...add, ...q].filter(x => !x.done || Date.now() - new Date(x.doneAt || x.addedAt) < 7 * 864e5).slice(0, 80);
+        await env.TS.put('gqueue', JSON.stringify(next));
+        return json(req, { ok: true, added: add.length });
+      }
+      if (path === '/gqueue/done' && req.method === 'POST') {
+        const q = (await env.TS.get('gqueue', 'json')) || [];
+        for (const x of q) if (x.id === body.id || x.text === body.text) { x.done = true; x.doneAt = new Date().toISOString(); }
+        await env.TS.put('gqueue', JSON.stringify(q));
+        return json(req, { ok: true });
+      }
       if (path === '/cqueue' && req.method === 'GET') return json(req, (await env.TS.get('cqueue', 'json')) || []);
       if (path === '/cqueue' && req.method === 'POST') {
         const q = (await env.TS.get('cqueue', 'json')) || [];

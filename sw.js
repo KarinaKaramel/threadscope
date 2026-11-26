@@ -1,5 +1,5 @@
 // Сначала сеть, кэш — только если офлайн. Так обновления сайта видны сразу.
-const C = 'ts-v24';
+const C = 'ts-v25';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== C).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {

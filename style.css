@@ -103,3 +103,6 @@ code{background:var(--soft);padding:1px 6px;border-radius:6px;font-size:13px}
 [hidden]{display:none!important}
 
 .grid.two > .card{align-self:start}
+.rbar{display:grid;grid-template-columns:minmax(70px,120px) 1fr 52px 64px;gap:8px;align-items:center;font-size:13px;margin:4px 0}
+.rbar .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rbar .tr{height:8px;border-radius:5px;background:var(--line);overflow:hidden}
+.rbar .tr i{display:block;height:100%;border-radius:5px;background:linear-gradient(90deg,var(--acc),var(--acc2))}.rbar .vv{text-align:right;font-variant-numeric:tabular-nums}.rbar .dd{font-size:12px}

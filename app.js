@@ -15,6 +15,7 @@ const S = {
   posts: LS.get('posts', []),
   insights: LS.get('insights', null),
   history: LS.get('history', []),
+  reports: LS.get('reports', []),
   queue: [],
   sort: { k: 'timestamp', d: -1 },
   drafts: LS.get('drafts', []),
@@ -201,7 +202,7 @@ function bestSlots(count = 6, fromMs = Date.now()) {
   const start = Math.ceil((fromMs + 15 * 60e3) / 1800e3) * 1800e3;
   for (let t = start; t < fromMs + 3 * 864e5; t += 1800e3) {
     const { hour, dow } = kyivParts(t);
-    let sc = prior(hour, dow);
+    let sc = prior(hour, dow) * peakBoost(hour, dow);
     if (pers.score[hour] != null) sc = sc * (1 - w) + pers.score[hour] * w;
     const near = taken.filter(x => Math.abs(x - t) < 2 * 3600e3).length;
     sc *= near ? 0.55 : 1;
@@ -213,6 +214,192 @@ function bestSlots(count = 6, fromMs = Date.now()) {
     if (picked.length >= count) break;
   }
   return picked.sort((a, b) => a.t - b.t);
+}
+
+// ---------- отчёты Threads (PDF из «Статистики») ----------
+const RPT_LBL = {
+  views: ['просмотры', 'перегляди', 'views'], viewers: ['зрители', 'глядачі', 'viewers'], net: ['чистый прирост', 'чистий приріст', 'net follow'], inter: ['взаимодействия', 'взаємодії', 'interactions'],
+  fol: ['подписчики', 'підписники', 'followers'], nonfol: ['неподписчики', 'непідписники', 'non-followers', 'nonfollowers'],
+  countries: ['топ стран', 'топ країн', 'top countries'], cities: ['топ городов', 'топ міст', 'top cities'], age: ['возраст', 'вік', 'age'], gender: ['пол', 'стать', 'gender'],
+  interests: ['популярные интересы', 'популярні інтереси', 'popular interests', 'top interests'], peaks: ['периоды наибольшей', 'періоди найбільшої', 'most active', 'peak activity'],
+};
+const isL = (s, k) => { const x = String(s).toLowerCase().trim(); return RPT_LBL[k].some(l => x === l || (l.length > 6 && x.startsWith(l))); };
+const isNumS = s => /^[+\-−]?\s*\d[\d\s  ]*([.,]\d+)?\s*(%|тыс\.?|тис\.?|k|млн\.?|m)?$/i.test(String(s).trim());
+function rnum(s) {
+  const mm = String(s).replace(/[  ]/g, ' ').trim().match(/^([+\-−]?)\s*(\d[\d\s]*(?:[.,]\d+)?)\s*(тыс|тис|k|млн|m)?/i);
+  if (!mm) return null;
+  let v = parseFloat(mm[2].replace(/\s/g, '').replace(',', '.'));
+  const u = (mm[3] || '').toLowerCase();
+  if (/тыс|тис|k/.test(u)) v *= 1e3; else if (/млн|m/.test(u)) v *= 1e6;
+  return (mm[1] === '-' || mm[1] === '−' ? -1 : 1) * Math.round(v * 100) / 100;
+}
+const DOW_IDX = { monday: 0, tuesday: 1, wednesday: 2, thursday: 3, friday: 4, saturday: 5, sunday: 6, 'понедельник': 0, 'вторник': 1, 'среда': 2, 'четверг': 3, 'пятница': 4, 'суббота': 5, 'воскресенье': 6, 'понеділок': 0, 'вівторок': 1, 'середа': 2, 'четвер': 3, "п'ятниця": 4, 'субота': 5, 'неділя': 6 };
+const DOW_RU = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+function parsePeak(day, desc) {
+  const h = (n, ap) => { n = +n % 12; return ap && /pm/i.test(ap) ? n + 12 : (ap ? n : +n); };
+  let from = null, to = null;
+  let mm = desc.match(/(\d{1,2})(?::\d\d)?\s*(AM|PM)?\s*[-–]\s*(\d{1,2})(?::\d\d)?\s*(AM|PM)?/i);
+  if (mm) { from = h(mm[1], mm[2] || mm[4]); to = h(mm[3], mm[4]); }
+  const vm = desc.match(/·\s*(.+)$/);
+  return { day, dow: DOW_IDX[day.toLowerCase().trim()] ?? null, from, to, viewers: vm ? rnum(vm[1]) : null, label: desc };
+}
+function parseReport(items, fname = '') {
+  const it = items.map(s => String(s).replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const idx = (k, from = 0) => { for (let i = from; i < it.length; i++) if (isL(it[i], k)) return i; return -1; };
+  const after = i => { if (i < 0) return null; for (let j = i + 1; j < Math.min(i + 4, it.length); j++) if (isNumS(it[j])) return rnum(it[j]); return null; };
+  const r = { views: after(idx('views')), viewers: after(idx('viewers')), net: after(idx('net')), inter: after(idx('inter')) };
+  const iv2 = idx('viewers', idx('viewers') + 1);
+  r.followers = after(idx('fol', Math.max(0, iv2))); r.nonfollowers = after(idx('nonfol'));
+  const heads = ['countries', 'cities', 'age', 'gender', 'interests', 'peaks'];
+  const pos = Object.fromEntries(heads.map(k => [k, idx(k)]));
+  const stop = it.findIndex(s => /^powered by/i.test(s));
+  const endOf = k => Math.min(...heads.map(h => pos[h]).filter(p => p > pos[k]), stop > pos[k] ? stop : it.length, it.length);
+  const pairs = k => {
+    const out = []; if (pos[k] < 0) return out;
+    for (let j = pos[k] + 1, e = endOf(k); j < e - 1; j++) if (!isNumS(it[j]) && isNumS(it[j + 1])) { out.push({ name: it[j], v: rnum(it[j + 1]) }); j++; }
+    return out;
+  };
+  for (const k of ['countries', 'cities', 'age', 'gender', 'interests']) r[k] = pairs(k);
+  r.peaks = [];
+  if (pos.peaks >= 0) for (let j = pos.peaks + 1, e = endOf('peaks'); j < e - 1; j += 2) r.peaks.push(parsePeak(it[j], it[j + 1]));
+  const fm = String(fname).match(/(\d{4}-\d{2}-\d{2})-(\d{4}-\d{2}-\d{2})/);
+  if (fm) { r.from = fm[1]; r.to = fm[2]; }
+  else { const d = new Date(); r.to = d.toISOString().slice(0, 10); r.from = new Date(d - 29 * 864e5).toISOString().slice(0, 10); r.guessed = true; }
+  r.period = it.find(s => /\d{1,2}\s+\S+\s*[-–]\s*\d{1,2}\s+\S+\s+\d{4}/.test(s)) || `${r.from} — ${r.to}`;
+  if (r.views == null || r.viewers == null) throw new Error('Не похоже на отчёт статистики Threads: не нашла «Просмотры» и «Зрители»');
+  r.id = r.to; r.addedAt = new Date().toISOString();
+  return r;
+}
+async function loadPdfJs() {
+  if (window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'; s.onload = ok; s.onerror = () => no(new Error('Не загрузился pdf.js — проверь интернет')); document.head.appendChild(s); });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+async function pdfItems(file) {
+  const lib = await loadPdfJs();
+  const doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const out = [];
+  for (let p = 1; p <= doc.numPages; p++) { const c = await (await doc.getPage(p)).getTextContent(); out.push(...c.items.map(i => i.str)); }
+  return out;
+}
+async function importReports(files) {
+  let ok = 0;
+  for (const f of files) {
+    try {
+      const r = parseReport(await pdfItems(f), f.name);
+      S.reports = (await api('/reports', { method: 'POST', body: { report: r } })).reports; ok++;
+    } catch (e) { toast(`${f.name}: ${e.message}`, 6000); }
+  }
+  LS.set('reports', S.reports);
+  if (ok) toast(`Отчётов добавлено: ${ok}`);
+  renderOverview();
+}
+async function loadReports() { try { S.reports = await api('/reports'); LS.set('reports', S.reports); } catch {} }
+
+const rDer = r => ({ er: r.views ? r.inter / r.views : null, conv: r.viewers && r.net != null ? r.net / r.viewers * 1000 : null, nonShare: r.viewers && r.nonfollowers != null ? r.nonfollowers / r.viewers : null });
+const INT_RU = { book: 'книги', ai: 'ИИ', gaming: 'игры', music: 'музыка', sports: 'спорт', movie: 'кино', movies: 'кино', tv: 'сериалы', food: 'еда', fashion: 'мода', travel: 'путешествия', tech: 'технологии', art: 'искусство', beauty: 'красота', fitness: 'фитнес', news: 'новости', anime: 'аниме', pet: 'животные', pets: 'животные' };
+const shortName = s => { const b = s.replace(/ Threads$/i, '').replace(/\s*\(город\)/i, ''); return INT_RU[b.toLowerCase()] || b; };
+function rPrev(list, r) { return [...list].filter(x => x.to < r.to).sort((a, b) => b.to.localeCompare(a.to))[0] || null; }
+function dTxt(cur, prev, { kind = 'num' } = {}) {
+  if (cur == null || prev == null) return '';
+  if (kind === 'pp') { const d = (cur - prev) * 100; return Math.abs(d) < 0.05 ? '<span class="mut">≈</span>' : `<span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '+' : ''}${d.toFixed(1).replace('.', ',')} п.п.</span>`; }
+  if (kind === 'abs') { const d = Math.round((cur - prev) * 10) / 10; return !d ? '<span class="mut">≈</span>' : `<span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '+' : ''}${String(d).replace('.', ',')}</span>`; }
+  if (!prev) return '';
+  const d = (cur - prev) / Math.abs(prev); return `<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '+' : ''}${Math.round(d * 100)}%</span>`;
+}
+const listMap = a => Object.fromEntries((a || []).map(x => [x.name, x.v]));
+function barsHtml(list, prevList, unit = '%', n = 6) {
+  if (!list?.length) return '<p class="mut small">нет данных</p>';
+  const P = listMap(prevList), max = Math.max(...list.map(x => x.v), 1);
+  return list.slice(0, n).map(x => {
+    const pv = P[x.name];
+    const d = prevList ? (pv == null ? '<span class="up">новое</span>' : unit === '%' ? dTxt(x.v / 100, pv / 100, { kind: 'pp' }) : dTxt(x.v, pv, { kind: 'abs' })) : '';
+    return `<div class="rbar"><span class="nm">${esc(shortName(x.name))}</span><span class="tr"><i style="width:${(x.v / max * 100).toFixed(1)}%"></i></span><span class="vv">${String(x.v).replace('.', ',')}${unit}</span><span class="dd">${d}</span></div>`;
+  }).join('') + (prevList ? (prevList.filter(x => !(x.name in listMap(list))).map(x => `<div class="small mut">выпало: ${esc(shortName(x.name))}</div>`).join('')) : '');
+}
+function reportFindings(r, p) {
+  const out = [], D = rDer(r), DP = p ? rDer(p) : null;
+  if (D.nonShare != null && D.nonShare > .9) out.push(`Почти весь охват (${pct(D.nonShare)}) — из рекомендаций, не от подписчиков. Алгоритм тебя раздаёт.`);
+  if (D.conv != null) out.push(D.conv < 8 ? `Подписок на 1000 зрителей: ${D.conv.toFixed(1).replace('.', ',')}. Это мало — зрители не находят причины остаться: постоянные рубрики, ясная строка в профиле, ответы в своих ветках.` : `Подписок на 1000 зрителей: ${D.conv.toFixed(1).replace('.', ',')} — нормальная конверсия.`);
+  if (D.er != null) out.push(`Вовлечённость ${pct(D.er)} (взаимодействия / просмотры)${D.er >= .04 ? ' — посты цепляют' : ' — добавляй больше поводов ответить'}.`);
+  const age = [...(r.age || [])].sort((a, b) => b.v - a.v);
+  if (age.length >= 2) out.push(`Ядро аудитории: ${age[0].name} (${String(age[0].v).replace('.', ',')}%) и ${age[1].name} (${String(age[1].v).replace('.', ',')}%) — пиши про их жизнь: работа, отношения, деньги, усталость.`);
+  if (r.interests?.length) {
+    const top = r.interests[0];
+    out.push(`Главный интерес твоих зрителей — ${shortName(top.name)}${r.interests[1] ? `, дальше ${r.interests.slice(1, 3).map(x => shortName(x.name)).join(', ')}` : ''}. Пробуй посты на стыке своей ниши и этих тем.`);
+  }
+  if (r.peaks?.length) out.push(`Пик зрителей: ${r.peaks.map(x => `${x.dow != null ? DOW_RU[x.dow] : x.day} ${x.from ?? '?'}:00–${x.to ?? '?'}:00`).join(', ')} (по Киеву) — сильные посты выкладывай в начале окна.`);
+  if (p) {
+    const ch = [];
+    if (p.views) ch.push(`просмотры ${r.views >= p.views ? '+' : ''}${Math.round((r.views - p.views) / p.views * 100)}%`);
+    if (DP.conv != null && D.conv != null) ch.push(`конверсия в подписки ${D.conv >= DP.conv ? 'выросла' : 'упала'} (${DP.conv.toFixed(1).replace('.', ',')} → ${D.conv.toFixed(1).replace('.', ',')} на 1000)`);
+    const PI = listMap(p.interests), fresh = (r.interests || []).filter(x => !(x.name in PI)).map(x => shortName(x.name));
+    if (fresh.length) ch.push(`новые интересы зрителей: ${fresh.join(', ')}`);
+    const PA = listMap(p.age); const sh = (r.age || []).map(x => ({ n: x.name, d: x.v - (PA[x.name] ?? x.v) })).sort((a, b) => Math.abs(b.d) - Math.abs(a.d))[0];
+    if (sh && Math.abs(sh.d) >= 3) ch.push(`возраст ${sh.n}: ${sh.d > 0 ? '+' : ''}${sh.d.toFixed(1).replace('.', ',')} п.п.`);
+    if (ch.length) out.unshift(`По сравнению с прошлым отчётом (${p.from} — ${p.to}): ${ch.join('; ').replace(/\.$/, '')}.`);
+  }
+  return out;
+}
+// краткая выжимка для промптов генератора
+function audienceText() {
+  const L = S.reports || []; if (!L.length) return '';
+  const r = [...L].sort((a, b) => b.to.localeCompare(a.to))[0], p = rPrev(L, r), D = rDer(r);
+  const age = [...(r.age || [])].sort((a, b) => b.v - a.v).slice(0, 3).map(x => `${x.name} ${x.v}%`).join(', ');
+  const g = (r.gender || []).map(x => `${x.name.toLowerCase()} ${x.v}%`).join(', ');
+  let s = `Моя аудитория по отчёту Threads (${r.from} — ${r.to}): возраст ${age || '—'}; пол: ${g || '—'}; интересы зрителей: ${(r.interests || []).map(x => shortName(x.name)).join(', ') || '—'}; ${pct(D.nonShare)} зрителей — не подписчики; подписок на 1000 зрителей: ${D.conv?.toFixed(1) ?? '—'}.`;
+  if (p) { const DP = rDer(p); s += ` Динамика к прошлому отчёту: просмотры ${p.views ? (r.views >= p.views ? '+' : '') + Math.round((r.views - p.views) / p.views * 100) + '%' : '—'}, конверсия ${DP.conv?.toFixed(1)} → ${D.conv?.toFixed(1)}.`; }
+  s += ' Учитывай: пиши для этого возраста; часть постов делай на стыке моих тем и интересов зрителей; посты должны давать повод подписаться (узнаваемая рубрика/голос), а не только лайкнуть.';
+  return s;
+}
+function peakBoost(hour, dow) {
+  const L = S.reports || []; if (!L.length) return 1;
+  const r = [...L].sort((a, b) => b.to.localeCompare(a.to))[0];
+  for (const pk of r.peaks || []) {
+    if (pk.from == null || pk.to == null) continue;
+    const inR = (h, d) => { const span = (pk.to - pk.from + 24) % 24 || 24; const off = (h - pk.from + 24) % 24; const dd = h < pk.from && off < span ? (d + 6) % 7 : d; return off < span && (pk.dow == null || dd === pk.dow); };
+    if (inR(hour, dow) || inR((hour + 1) % 24, hour === 23 ? (dow + 1) % 7 : dow)) return 1.25;
+  }
+  return 1;
+}
+function reportsCard() {
+  const L = [...(S.reports || [])].sort((a, b) => b.to.localeCompare(a.to));
+  const r = L[0], p = r ? rPrev(L, r) : null;
+  const up = `<span><button class="sm acc" id="rptBtn">＋ Загрузить PDF</button><input type="file" id="rptFile" accept="application/pdf,.pdf" multiple hidden></span>`;
+  if (!r) return `<div class="card" style="margin-top:12px" id="rptCard"><h3>Отчёты Threads</h3><p class="mut small">В приложении Threads: Статистика → экспорт за 30 дней → PDF. Загрузи его сюда — сайт разберёт возраст, пол, города, интересы зрителей и пиковые часы, сохранит снимок и с каждым новым отчётом покажет динамику. Генератор черновиков и выбор времени тоже начнут это учитывать.</p>${up}</div>`;
+  const D = rDer(r), DP = p ? rDer(p) : {};
+  const k = (l, v, d) => `<div class="card kpi"><div class="l">${l}</div><div class="v">${v}</div><div class="d">${d || (p ? '' : '<span class="mut">динамика — со 2-го отчёта</span>')}</div></div>`;
+  const series = [...L].reverse();
+  return `<div class="card" style="margin-top:12px" id="rptCard">
+    <div class="row" style="justify-content:space-between"><h3 style="margin:0">Отчёт Threads: ${esc(r.period)}</h3>${up}</div>
+    <p class="mut small" style="margin:4px 0 10px">${p ? `сравнение с отчётом ${p.from} — ${p.to}` : 'первый отчёт — со следующим появится динамика'} · отчётов: ${L.length}</p>
+    <div class="grid kpis">
+      ${k('Просмотры', fmt(r.views), dTxt(r.views, p?.views))}
+      ${k('Зрители', fmt(r.viewers), dTxt(r.viewers, p?.viewers))}
+      ${k('Чистый прирост', (r.net > 0 ? '+' : '') + fmt(r.net), p ? dTxt(r.net, p.net, { kind: 'abs' }) : '')}
+      ${k('Взаимодействия', fmt(r.inter), dTxt(r.inter, p?.inter))}
+      ${k('ER', pct(D.er), p ? dTxt(D.er, DP.er, { kind: 'pp' }) : '')}
+      ${k('Подписок на 1000 зрителей', D.conv == null ? '—' : D.conv.toFixed(1).replace('.', ','), p ? dTxt(D.conv, DP.conv, { kind: 'abs' }) : '')}
+      ${k('Не подписчики', pct(D.nonShare), p ? dTxt(D.nonShare, DP.nonShare, { kind: 'pp' }) : '')}
+    </div>
+    <h3 style="margin-top:14px">Выводы</h3><ul class="recs">${reportFindings(r, p).map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+    <div class="grid two" style="margin-top:10px">
+      <div><h3>Возраст</h3>${barsHtml(r.age, p?.age, '%', 7)}<h3 style="margin-top:12px">Пол</h3>${barsHtml(r.gender, p?.gender)}</div>
+      <div><h3>Интересы зрителей</h3>${barsHtml(r.interests, p?.interests, '', 8)}<h3 style="margin-top:12px">Пиковые окна</h3>${(r.peaks || []).map(x => `<div class="small">${x.dow != null ? DOW_RU[x.dow] : esc(x.day)} · ${esc(x.label)}</div>`).join('') || '<p class="mut small">нет</p>'}</div>
+      <div><h3>Страны</h3>${barsHtml(r.countries, p?.countries)}</div>
+      <div><h3>Города</h3>${barsHtml(r.cities, p?.cities)}</div>
+    </div>
+    ${series.length >= 3 ? `<div class="grid two" style="margin-top:10px"><div><h3>Просмотры по отчётам</h3>${lineChart(series.map(x => ({ x: x.to, v: x.views })), { h: 140 })}</div><div><h3>Подписок на 1000 зрителей</h3>${lineChart(series.map(x => ({ x: x.to, v: Math.max(0, Math.round((rDer(x).conv || 0) * 10) / 10) })), { h: 141, color: 'var(--acc2)' })}</div></div>` : ''}
+    <details style="margin-top:10px"><summary class="small">Все отчёты (${L.length})</summary>${L.map(x => `<div class="row small" style="justify-content:space-between;margin-top:4px"><span>${x.from} — ${x.to} · просмотры ${fmt(x.views)} · прирост ${x.net > 0 ? '+' : ''}${fmt(x.net)}</span><button class="ghost sm" data-rdel="${esc(x.id)}">удалить</button></div>`).join('')}</details>
+  </div>`;
+}
+function bindReports() {
+  const f = $('#rptFile'); if ($('#rptBtn')) $('#rptBtn').onclick = () => f.click(); if (f) f.onchange = () => { if (f.files.length) { toast('Разбираю отчёт…'); importReports([...f.files]); } };
+  document.querySelectorAll('[data-rdel]').forEach(b => b.onclick = async () => {
+    if (!confirm('Удалить этот отчёт?')) return;
+    try { S.reports = (await api('/reports/delete', { method: 'POST', body: { id: b.dataset.rdel } })).reports; LS.set('reports', S.reports); renderOverview(); } catch (e) { toast(e.message, 5000); }
+  });
 }
 
 // ---------- рекомендации ----------
@@ -309,7 +496,9 @@ function renderOverview() {
         <div class="card"><h3>Когда постить</h3>${hourHeat()}<p class="mut small" style="margin:8px 0 0">Время Киева. Смесь общей активности укр. аудитории и результатов твоих постов (вес твоих данных растёт с каждым постом).</p></div>
       </div>
     </div>
-    <div class="card" style="margin-top:12px"><h3>Топ по обсуждению</h3>${postsTable([...ps].sort((a, b) => m(b).replies - m(a).replies).slice(0, 5), false)}</div>`;
+    <div class="card" style="margin-top:12px"><h3>Топ по обсуждению</h3>${postsTable([...ps].sort((a, b) => m(b).replies - m(a).replies).slice(0, 5), false)}</div>
+    ${reportsCard()}`;
+  bindReports();
 }
 
 function postsTable(list, sortable = true) {
@@ -358,7 +547,7 @@ function claudeContext(extra = '') {
   const ps = byDate(rootPosts()).slice(0, 20);
   return `Статистика моего Threads @${S.me?.me?.username || ''} (подписчиков: ${S.me?.followers ?? '?'}), время по Киеву:\n` +
     ps.map(p => { const x = m(p); return `- ${kyiv(p.timestamp, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} | просм ${x.views}, лайки ${x.likes}, ответы ${x.replies}, репосты ${x.reposts}, ER ${pct(x.er)}${p.topic_tag ? ', тема ' + p.topic_tag : ''}\n  "${(p.text || '').replace(/\n/g, ' / ')}"`; }).join('\n') +
-    `\n\n${extra || 'Проанализируй, что работает, и предложи 5 новых постов в моём стиле.'}`;
+    (audienceText() ? '\n\n' + audienceText() : '') + `\n\n${extra || 'Проанализируй, что работает, и предложи 5 новых постов в моём стиле.'}`;
 }
 
 
@@ -417,7 +606,7 @@ async function genPrompt(target) {
   const recent = byDate(rootPosts()).slice(0, 10).map(x => '* ' + (x.text || '').replace(/\n/g, ' / ')).join('\n');
   const flops = S.perf?.ready && S.perf.flops.length ? S.perf.flops.slice(0, 4).map(f => `* "${f.text.replace(/\n/g, ' / ')}" (ER ${pct(f.er)})`).join('\n') : '';
   const gm = $('#gmode').value, MODE_RU = { recognize: 'Механика «узнай себя»: конкретные бытовые ситуации моей аудитории её же мыслями и формулировками, чтобы хотелось написать «это же про меня». Без общих слов и мотивации.', unspoken: 'Механика «невысказанная мысль»: то, что аудитория давно чувствует, но редко говорит вслух; коротко, дерзко, через неожиданное сравнение, чтобы хотелось переслать другу.', debate: 'Механика «спорный тезис»: перевёрнутое популярное убеждение, с которым хочется поспорить, но через иронию, без коучинга и искусственных скандалов.', story: 'Механика «моя история»: найди в моей реальной ситуации самый неожиданный поворот, конфликт или ошибку и сделай мини-истории с интригой с первой строки. Не выдумывай событий, деталей и цифр.\nМоя ситуация: ' + $('#gstory').value.trim() };
-  let text = `Напиши ${$('#gcount').value} разных черновиков постов для моего украинского Threads${$('#gtopic').value ? ' на тему ' + $('#gtopic').value : ''} (скилл threads-posts).${MODE_RU[gm] ? '\n' + MODE_RU[gm] : ''}${$('#ghint').value.trim() ? '\nПожелание: ' + $('#ghint').value.trim() : ''}\n\nМои лучшие посты по статистике (ориентируйся на них):\n${best || '—'}${flops ? '\n\nНе зашли (избегай такого):\n' + flops : ''}\n\nНедавние (не повторяй):\n${recent || '—'}${p.manual ? '\n\nМои правила:\n' + p.manual : ''}${p.notes ? '\n\nЧто я люблю/не люблю (по моим оценкам):\n' + p.notes : ''}\n\nКаждый пост: до 280 символов, крючок в первой строке, жизненно и психологически точно (без абсурда), с 2-3 конкретными примерами из жизни. Повод ответить давай по-разному: незаконченный список, вывод с нюансом, личное признание — вопросом заканчивай не больше трети постов. Формат ответа строго такой — посты разделены строкой ---, без нумерации:\nтекст поста\nТема: одна тема из [психологія, стосунки, айті, робота, гроші, гумор, життя, соцмережі, штучний інтелект]\nПочему: одна строка, почему захотят ответить\n---`;
+  let text = `Напиши ${$('#gcount').value} разных черновиков постов для моего украинского Threads${$('#gtopic').value ? ' на тему ' + $('#gtopic').value : ''} (скилл threads-posts).${MODE_RU[gm] ? '\n' + MODE_RU[gm] : ''}${$('#ghint').value.trim() ? '\nПожелание: ' + $('#ghint').value.trim() : ''}\n\nМои лучшие посты по статистике (ориентируйся на них):\n${best || '—'}${flops ? '\n\nНе зашли (избегай такого):\n' + flops : ''}\n\nНедавние (не повторяй):\n${recent || '—'}${p.manual ? '\n\nМои правила:\n' + p.manual : ''}${p.notes ? '\n\nЧто я люблю/не люблю (по моим оценкам):\n' + p.notes : ''}${audienceText() ? '\n\n' + audienceText() : ''}\n\nКаждый пост: до 280 символов, крючок в первой строке, жизненно и психологически точно (без абсурда), с 2-3 конкретными примерами из жизни. Повод ответить давай по-разному: незаконченный список, вывод с нюансом, личное признание — вопросом заканчивай не больше трети постов. Формат ответа строго такой — посты разделены строкой ---, без нумерации:\nтекст поста\nТема: одна тема из [психологія, стосунки, айті, робота, гроші, гумор, життя, соцмережі, штучний інтелект]\nПочему: одна строка, почему захотят ответить\n---`;
   if (target === 'chatgpt') text = text.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT;
   return text;
 }
@@ -1194,6 +1383,7 @@ async function syncAll() {
     try { S.insights = await api(`/insights?since=${since}&until=${until}`); LS.set('insights', S.insights); } catch (e) { console.warn(e); }
     try { S.history = await api('/history'); LS.set('history', S.history); } catch {}
     try { S.queue = await api('/queue'); } catch {}
+    await loadReports();
     try { await loadInbox(); } catch {}
     try { S.perf = await api('/perf', { method: 'POST', body: { posts: rootPosts().map(p => ({ id: p.id, text: p.text, timestamp: p.timestamp, topic_tag: p.topic_tag, metrics: p.metrics })) } }); LS.set('perf', S.perf); } catch {}
     LS.set('syncedAt', Date.now());
@@ -1214,5 +1404,6 @@ window.addEventListener('hashchange', renderAll);
 $('#refreshBtn').onclick = () => syncAll().then(() => toast('Обновлено')).catch(e => toast(e.message, 5000));
 if (!['#overview', '#posts', '#replies', '#comment', '#studio', '#trends', '#connect'].includes(location.hash)) location.hash = S.key ? '#overview' : '#connect';
 renderAll();
+if (S.key) loadReports().then(() => { if ((location.hash || '#overview') === '#overview') renderOverview(); });
 if (S.key && Date.now() - LS.get('syncedAt', 0) > 10 * 60e3) syncAll().catch(e => toast(e.message, 5000));
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

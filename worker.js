@@ -430,6 +430,28 @@ async function learn(env) {
   return p;
 }
 
+// ---------- отчёты Threads (PDF «Статистика», разобранные на сайте) ----------
+async function getReports(env) { return ((await env.TS.get('reports', 'json')) || []).sort((a, b) => String(a.to).localeCompare(String(b.to))); }
+function cleanReport(r) {
+  const n = x => (x == null || isNaN(+x) ? null : +x);
+  const L = (a, k = 12) => (Array.isArray(a) ? a : []).slice(0, k).map(x => ({ name: String(x.name || '').slice(0, 60), v: n(x.v) }));
+  return { id: String(r.to || r.id || '').slice(0, 10), from: String(r.from || '').slice(0, 10), to: String(r.to || '').slice(0, 10), period: String(r.period || '').slice(0, 60), guessed: !!r.guessed,
+    views: n(r.views), viewers: n(r.viewers), net: n(r.net), inter: n(r.inter), followers: n(r.followers), nonfollowers: n(r.nonfollowers),
+    countries: L(r.countries), cities: L(r.cities), age: L(r.age), gender: L(r.gender), interests: L(r.interests),
+    peaks: (Array.isArray(r.peaks) ? r.peaks : []).slice(0, 7).map(x => ({ day: String(x.day || '').slice(0, 20), dow: n(x.dow), from: n(x.from), to: n(x.to), viewers: n(x.viewers), label: String(x.label || '').slice(0, 80) })),
+    addedAt: new Date().toISOString() };
+}
+async function audienceBlock(env) {
+  const L = await getReports(env); if (!L.length) return '';
+  const r = L[L.length - 1], p = L.length > 1 ? L[L.length - 2] : null;
+  const conv = x => (x.viewers && x.net != null ? (x.net / x.viewers * 1000).toFixed(1) : '?');
+  const nm = s => { const b = s.replace(/ Threads$/i, ''); return ({ book: 'книги', ai: 'ШІ', gaming: 'ігри', music: 'музика' })[b.toLowerCase()] || b; };
+  let s = `\nАУДИТОРІЯ за звітом Threads (${r.from} - ${r.to}): вік ${[...r.age].sort((a, b) => b.v - a.v).slice(0, 3).map(x => x.name + ' ' + x.v + '%').join(', ')}; стать ${r.gender.map(x => x.name + ' ' + x.v + '%').join(', ')}; інтереси глядачів: ${r.interests.map(x => nm(x.name)).join(', ')}; ${r.viewers ? Math.round((r.nonfollowers || 0) / r.viewers * 100) : '?'}% глядачів - не підписники; підписок на 1000 глядачів: ${conv(r)}.`;
+  if (p) s += ` Динаміка до попереднього звіту: перегляди ${p.views ? (r.views >= p.views ? '+' : '') + Math.round((r.views - p.views) / p.views * 100) + '%' : '?'}, конверсія в підписки ${conv(p)} -> ${conv(r)}.`;
+  s += ' Пиши для цього віку і життя; частину ідей роби на стику її ніш з інтересами глядачів; пост має давати причину підписатися (впізнаваний голос, рубрика), а не тільки лайкнути.\n';
+  return s;
+}
+
 // ---------- генерация ----------
 async function suggest(env, { post, comment, chain = [], hint = '' }) {
   const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), true);
@@ -446,7 +468,7 @@ const GEN_MODES = {
   story: 'МЕХАНІКА "моя історія": нижче реальна ситуація з життя Карини. Знайди в ній найнесподіваніший поворот, конфлікт або помилку. Напиши мікроісторії: конкретні деталі з її розповіді, жива емоція, інтрига з першого рядка, поворот або висновок у кінці, привід для читачів розповісти схоже. СУВОРО: не вигадуй подій, деталей, людей і цифр, яких немає в її розповіді.',
 };
 async function generate(env, { count = 10, topic = '', hint = '', best = [], recent = [], mode = '', story = '' }) {
-  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false) + await audienceBlock(env);
   count = Math.max(3, Math.min(+count || 10, 15));
   const user = `${best.length ? 'Її пости з найкращою статистикою (на них орієнтуйся):\n' + best.map(b => `* "${b.text}" (перегляди ${b.views}, відповіді ${b.replies}, ER ${b.er})`).join('\n') + '\n' : ''}${recent.length ? 'Недавні пости (НЕ повторюй ці ідеї і механіки):\n' + recent.map(r => '* ' + r).join('\n') + '\n' : ''}
 Сьогодні ${new Date().toLocaleDateString('uk-UA', { timeZone: 'Europe/Kyiv', weekday: 'long', day: 'numeric', month: 'long' })} - якщо доречно, прив'яжи частину ідей до сезону, дня тижня чи актуальних буденних подій.
@@ -460,7 +482,7 @@ ${GEN_MODES[mode] ? GEN_MODES[mode] + '\n' : ''}${mode === 'story' && story ? '�
 
 
 async function improve(env, { text, hint = '', tag = '', fix = null }) {
-  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false);
+  const p = await getPrefs(env); const perfTxt = perfBlock(await getPerf(env), false) + await audienceBlock(env);
   if (Array.isArray(fix) && fix.length) {
     const user = `Ось пост Карини:\n"${text}"\n${tag ? 'Тема: ' + tag + '\n' : ''}
 Внеси ТІЛЬКИ ці правки, усе інше (думку, голос, жарт, поворот) збережи:\n${fix.map(f => '- ' + f).join('\n')}
@@ -631,6 +653,17 @@ export default {
         return json(req, await suggest(env, body));
       }
       if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
+      if (path === '/reports' && req.method === 'GET') return json(req, await getReports(env));
+      if (path === '/reports' && req.method === 'POST') {
+        const r = cleanReport(body.report || {});
+        if (!r.to || r.views == null) return json(req, { error: 'Пустой отчёт' }, 400);
+        const L = (await getReports(env)).filter(x => x.id !== r.id); L.push(r);
+        const out = L.sort((a, b) => a.to.localeCompare(b.to)).slice(-36);
+        await env.TS.put('reports', JSON.stringify(out)); return json(req, { ok: true, reports: out });
+      }
+      if (path === '/reports/delete' && req.method === 'POST') {
+        const out = (await getReports(env)).filter(x => x.id !== String(body.id)); await env.TS.put('reports', JSON.stringify(out)); return json(req, { ok: true, reports: out });
+      }
       if (path === '/perf' && req.method === 'POST') return json(req, await savePerf(env, body.posts || []));
       if (path === '/perf' && req.method === 'GET') return json(req, (await getPerf(env)) || { ready: false });
       if (path === '/gqueue' && req.method === 'GET') return json(req, ((await env.TS.get('gqueue', 'json')) || []).filter(x => !x.done));

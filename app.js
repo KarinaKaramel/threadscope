@@ -991,6 +991,9 @@ function renderComment() {
   $('#comment').innerHTML = `
     <h2>Комментирую чужие ветки</h2>
     <p class="mut small" style="margin-top:-6px">Самый быстрый рост для маленького аккаунта — 10-15 цепких комментов в день под свежими (до часа) постами аккаунтов крупнее тебя. Вставь текст поста — получишь 5 вариантов разных механик. Публикуешь сама.</p>
+    <div class="card" style="margin-bottom:12px"><div class="row"><h3 style="margin:0">Отобранные ветки</h3><span class="sp"></span><span class="mut small" id="cqstat"></span></div>
+      <p class="mut small" style="margin:4px 0 0">Сюда Claude складывает свежие ветки из твоей ленты с готовыми вариантами комментов. Открыла → вставила → «Готово».</p>
+      <div id="cqueue" style="margin-top:6px"><p class="mut small">Загрузка…</p></div></div>
     <div class="grid two">
       <div class="card">
         <label>Текст чужого поста</label><textarea id="ctext" style="min-height:130px" placeholder="скопируй текст поста из Threads">${esc(d.text)}</textarea>
@@ -1008,6 +1011,7 @@ function renderComment() {
         <li><b>Когда</b><span class="mut">в первый час после поста и в первых 5-10 комментах — их видят все</span></li>
       </ul></div>
     </div>`;
+  loadCQueue();
   const save = () => LS.set('cdraft', { text: $('#ctext').value, author: $('#cauthor').value, hint: $('#chint').value });
   ['#ctext', '#cauthor', '#chint'].forEach(s => $(s).oninput = save);
   const prompt = target => { let t = `Напиши 5 разных комментариев от моего имени под чужим постом в Threads (скилл threads-posts), каждый — по своей механике, чтобы под ним лайкали и отвечали, а люди хотели открыть мой профиль.\n\nПост${$('#cauthor').value.trim() ? ' от ' + $('#cauthor').value.trim() : ''}:\n"${$('#ctext').value.trim()}"${$('#chint').value.trim() ? '\nПожелание: ' + $('#chint').value.trim() : ''}\n\n${COMMENT_MECH_RU}\n\nФормат: комментарий, под ним строка «Механика: …», между комментариями строка ---`; if (target === 'chatgpt') t = t.replace(' (скилл threads-posts)', '') + '\n\n' + STYLE_EXT; return t; };
@@ -1024,6 +1028,25 @@ function renderComment() {
     } catch (e) { $('#cout').innerHTML = `<p class="small" style="color:var(--bad)">${esc(e.message)} — нажми «в Claude»</p>`; }
     finally { b.disabled = false; b.textContent = '✨ Ещё 5'; }
   };
+}
+
+async function loadCQueue() {
+  const box = $('#cqueue'); if (!box) return;
+  let q = [];
+  try { q = await api('/cqueue'); } catch (e) { box.innerHTML = `<p class="small mut">${esc(e.message)}</p>`; return; }
+  const open = q.filter(x => !x.done), done = q.filter(x => x.done);
+  if ($('#cqstat')) $('#cqstat').textContent = q.length ? `осталось ${open.length}, сделано ${done.length}` : '';
+  const ago = t => { const h = (Date.now() - new Date(t)) / 3600e3; return h < 1 ? Math.round(h * 60) + ' мин назад' : Math.round(h) + ' ч назад'; };
+  box.innerHTML = q.length ? [...open, ...done].map((x, k) => `<div class="result" style="${x.done ? 'opacity:.45' : ''}">
+      <div class="meta">@${esc(x.author)} · добавлено ${ago(x.addedAt)}${x.note ? ' · ' + esc(x.note) : ''} ${x.done ? '<span class="pill ok">готово</span>' : ''}</div>
+      <div class="t">${esc(x.text)}</div>
+      <div class="variants">${x.variants.map(v => `<div class="variant"><div style="flex:1"><div style="padding:8px 10px;border-radius:10px;background:var(--soft)">${esc(v.text || v)}</div>${v.mech ? `<div class="small mut">${esc(v.mech)}</div>` : ''}</div><div class="acts"><button class="ghost sm" data-qcp="${esc(v.text || v)}">Копия</button></div></div>`).join('')}</div>
+      <div class="row small" style="margin-top:6px"><a href="${esc(x.url)}" target="_blank" rel="noopener">открыть ветку ↗</a><span class="sp"></span>
+        <a href="#" data-qdone="${esc(x.url)}" data-undo="${x.done ? 1 : ''}">${x.done ? 'вернуть' : '✓ готово'}</a><a href="#" data-qdel="${esc(x.url)}" style="color:var(--bad)">убрать</a></div></div>`).join('')
+    : '<p class="mut small">Пока пусто. Попроси Claude: «пройдись по моей ленте и отбери ветки для комментов».</p>';
+  box.querySelectorAll('[data-qcp]').forEach(b => b.onclick = () => { copy(b.dataset.qcp, 'Скопировано — вставь в ответ в Threads'); feedback(b.dataset.qcp, 'ok', [], 'comment'); });
+  box.querySelectorAll('[data-qdone]').forEach(b => b.onclick = async e => { e.preventDefault(); await api('/cqueue/done', { method: 'POST', body: { url: b.dataset.qdone, undo: !!b.dataset.undo } }).catch(() => {}); loadCQueue(); });
+  box.querySelectorAll('[data-qdel]').forEach(b => b.onclick = async e => { e.preventDefault(); await api('/cqueue/done', { method: 'POST', body: { url: b.dataset.qdel, remove: true } }).catch(() => {}); loadCQueue(); });
 }
 
 // ---------- Подключение ----------

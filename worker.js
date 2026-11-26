@@ -633,6 +633,20 @@ export default {
       if (path === '/improve' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Пустой текст' }, 400); return json(req, await improve(env, body)); }
       if (path === '/perf' && req.method === 'POST') return json(req, await savePerf(env, body.posts || []));
       if (path === '/perf' && req.method === 'GET') return json(req, (await getPerf(env)) || { ready: false });
+      if (path === '/cqueue' && req.method === 'GET') return json(req, (await env.TS.get('cqueue', 'json')) || []);
+      if (path === '/cqueue' && req.method === 'POST') {
+        const q = (await env.TS.get('cqueue', 'json')) || [];
+        const add = (body.items || []).filter(i => i.url && !q.some(x => x.url === i.url)).map(i => ({ url: i.url, author: i.author || '', text: String(i.text || '').slice(0, 1000), note: i.note || '', variants: (i.variants || []).slice(0, 5), addedAt: new Date().toISOString(), done: false }));
+        const next = [...add, ...q].filter(x => !x.done || Date.now() - new Date(x.doneAt || x.addedAt) < 3 * 864e5).slice(0, 60);
+        await env.TS.put('cqueue', JSON.stringify(next));
+        return json(req, { ok: true, added: add.length, total: next.length });
+      }
+      if (path === '/cqueue/done' && req.method === 'POST') {
+        const q = (await env.TS.get('cqueue', 'json')) || [];
+        for (const x of q) if (x.url === body.url) { x.done = !body.undo; x.doneAt = new Date().toISOString(); if (body.remove) x.removed = true; }
+        await env.TS.put('cqueue', JSON.stringify(q.filter(x => !x.removed)));
+        return json(req, { ok: true });
+      }
       if (path === '/comment' && req.method === 'POST') { if (!body.text?.trim()) return json(req, { error: 'Вставь текст поста' }, 400); return json(req, await comment(env, body)); }
       if (path === '/generate' && req.method === 'POST') return json(req, await generate(env, body));
       if (path === '/prefs' && req.method === 'GET') { const p = await getPrefs(env); return json(req, { liked: p.liked.length, disliked: p.disliked.length, notes: p.notes, manual: p.manual, learnedAt: p.learnedAt || null }); }
